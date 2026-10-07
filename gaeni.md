@@ -1,3 +1,5 @@
+**DO NOT WRITE ANY CODE CONSIDERING Gaeni.md.**
+
 # Gaeni EA — Expert Advisor for MT5 Signal System
 
 ## Full Project Specification Document
