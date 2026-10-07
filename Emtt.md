@@ -4,7 +4,7 @@
 
 1. Emtt will be built based on this (`Emtt.md`) file.
 2. Only include what I explicitly ask for into `Emtt.md`.
-3. Any "Gaeni" I write to include at Emtt → treat as "Emtt".
+
 
 ---
 
