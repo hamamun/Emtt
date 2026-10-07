@@ -18,7 +18,11 @@ terminal's data folder (spec §4a, §4b).
 
 Implements `Emtt.md` sections 4–8:
 
-- **Panel A** (order open) and **Panel B** (no order) render exactly per §5, with dummy values.
+- **Layout-only skeleton:** every row shows its label only (`Regime:`, `SIGNAL:`,
+  `Entry:`, `Ticket:` …) — **no dummy values exist anywhere**, so nothing fake can
+  leak into later phases; real values arrive with the phases that produce them.
+  The fixed panel width is measured from §5's row formats (measure-only templates,
+  never displayed), so the panel already has its final size.
 - **Price Row** tracks the terminal's Bid / Ask / Spread in realtime; `►` marks the dealing
   side (BUY → Ask, SELL → Bid, WAIT → none) — §6 rule 2.
 - **A/B switch:** input *Phase 1 demo panel switch* = `Auto` / `Panel A` / `Panel B`.

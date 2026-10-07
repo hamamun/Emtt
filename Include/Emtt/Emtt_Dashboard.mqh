@@ -161,6 +161,10 @@ void EmttDashboardInit(const string headerSample)
    if(ObjectFind(0,bg)<0)
       ObjectCreate(0,bg,OBJ_RECTANGLE_LABEL,0,0,0);
 
+   // Width templates below are MEASURED ONLY and never rendered. They
+   // mirror the final content formats of Emtt.md section 5, so the panel
+   // keeps its final fixed width (rule 13) through every phase even while
+   // rows still show labels only.
    int maxw=(int)EmttTextWidth(headerSample,EMTT_FSIZE);
    string s;
    s="Bid: 1.08538  |  "+EmttGlyph(EMTT_G_ARROW)+"Ask: 1.08540  |  Spread: 12 pts";
