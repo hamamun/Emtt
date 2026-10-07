@@ -25,9 +25,9 @@ Implements `Emtt.md` sections 4–8:
   never displayed), so the panel already has its final size.
 - **Price Row** tracks the terminal's Bid / Ask / Spread in realtime; `►` marks the dealing
   side (BUY → Ask, SELL → Bid, WAIT → none) — §6 rule 2.
-- **A/B switch:** input *Phase 1 demo panel switch* = `Auto` / `Panel A` / `Panel B`.
-  `Auto` follows rule 8 — the LIVE TRADE block appears only while an Emtt position identified
-  by the **Magic number** input (default `20251007`) is open.
+- **A/B panels (rule 8, automatic):** Panel B (no LIVE TRADE block) while no Emtt trade is open;
+  Panel A (with the LIVE TRADE block) appears only while an Emtt position identified by the
+  **Magic number** input (default `20251007`) is open. There is no manual panel-switch input.
 - **Draggable** panel anchored top-left; 1-second timer refresh plus per-tick price updates
   (rule 14, 15).
 - **M5 / M15 / M30 only** (rule 4d, 19): on any other timeframe the panel still draws in full,

@@ -13,17 +13,8 @@
 
 #include "../Include/Emtt/Emtt_Dashboard.mqh"
 
-//--- Phase 1 demo panel mode: how the A/B switch is driven -----------
-enum ENUM_EMTT_PANEL_MODE
-  {
-   EMTT_MODE_AUTO,      // Auto: LIVE block follows an Emtt magic-number position (rule 8)
-   EMTT_MODE_PANEL_A,   // Panel A: layout with the LIVE TRADE block
-   EMTT_MODE_PANEL_B    // Panel B: layout without the LIVE TRADE block
-  };
-
-input long                 InpMagicNumber=20251007;      // Magic number (rule 18)
-input bool                 InpAutoTrading=true;          // Auto Trading ON/OFF (rule 9)
-input ENUM_EMTT_PANEL_MODE InpPanelMode=EMTT_MODE_AUTO;  // Phase 1 demo panel switch
+input long InpMagicNumber=20251007;   // Magic number
+input bool InpAutoTrading=true;       // Auto Trading ON/OFF
 
 //+------------------------------------------------------------------+
 //| Timeframe gate - rule 4d: M5 / M15 / M30 only                     |
@@ -108,10 +99,9 @@ void FillPanel(SEmttPanelData &d)
      }
    else
      {
-      bool live=(InpPanelMode==EMTT_MODE_PANEL_A);
-      if(InpPanelMode==EMTT_MODE_AUTO)
-         live=EmttOwnPositionOpen();
-      if(live)
+      // rule 8: the LIVE TRADE block appears only while an Emtt position
+      // identified by its magic number is open
+      if(EmttOwnPositionOpen())
         {
          // LIVE TRADE block labels (rule 8)
          d.showLive=true;
@@ -126,7 +116,7 @@ void FillPanel(SEmttPanelData &d)
    // rule 2: realtime Price Row - live terminal data, never dummy
    d.priceRow="Bid: "+DoubleToString(bid,_Digits)+"  |  "
              +"Ask: "+DoubleToString(ask,_Digits)+"  |  "
-             +IntegerToString(spreadPts)+" pts";
+             +"Spread: "+IntegerToString(spreadPts)+" pts";
   }
 
 //+------------------------------------------------------------------+
