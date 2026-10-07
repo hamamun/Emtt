@@ -92,25 +92,28 @@ void FillPanel(SEmttPanelData &d)
 
    if(!compatible)
      {
-      // rule 19: same full panel, data blank, red STATUS message;
-      // no signal and no new order on this timeframe
+      // rule 19: signal side blanked - same full panel, red STATUS message,
+      // no signal and no new order on this timeframe. Rows 11-14 are not
+      // part of this rule: a live trade is untouched by the chart timeframe.
       d.status="Incompatible chart. Switch to M5/M15/M30.";
       d.statusClr=EMTT_CLR_SELL;                         // warning red (#EB6F6F)
      }
-   else
+
+   // rules 8, 20, 21: the LIVE TRADE block follows Emtt's own magic-number
+   // position and is independent of the chart timeframe - an open trade keeps
+   // its block (labelled with the trade's own timeframe) even when the chart
+   // is on an incompatible one. Only new signals and new orders stop there.
+   if(EmttOwnPositionOpen())
      {
-      // rule 8: the LIVE TRADE block appears only while an Emtt position
-      // identified by its magic number is open
-      if(EmttOwnPositionOpen())
-        {
-         // LIVE TRADE block labels (rule 8)
-         d.showLive=true;
-         d.liveHeader=EmttGlyph(EMTT_G_DIAMOND)+" LIVE TRADE";
-         d.ticket="Ticket:";
-         d.floatingPL="Floating P/L:";
-         d.liveSL="Live SL:";
-         d.protect="Protect:";
-        }
+      // LIVE TRADE block labels (rule 8)
+      d.showLive=true;
+      // rule 20: the " - On M15" suffix arrives with the phase that opens
+      // trades and records the trade's own timeframe
+      d.liveHeader=EmttGlyph(EMTT_G_DIAMOND)+" LIVE TRADE";
+      d.ticket="Ticket:";
+      d.floatingPL="Floating P/L:";
+      d.liveSL="Live SL:";
+      d.protect="Protect:";
      }
 
    // rule 2: realtime Price Row - live terminal data, never dummy
