@@ -23,20 +23,24 @@ Implements `Emtt.md` sections 4–8:
   leak into later phases; real values arrive with the phases that produce them.
   The fixed panel width is measured from §5's row formats (measure-only templates,
   never displayed), so the panel already has its final size.
-- **Price Row** tracks the terminal's Bid / Ask / Spread in realtime; `►` marks the dealing
-  side (BUY → Ask, SELL → Bid, WAIT → none) — §6 rule 2.
+- **Price Row** tracks the terminal's Bid / Ask / Spread in realtime, exactly as the terminal
+  shows them (§6 rule 2). Phase 1 draws **no `►` marker**: the dealing side (BUY → `►Ask`,
+  SELL → `►Bid`, WAIT → none) is only known once a signal exists, so the marker arrives with
+  the phase that produces signals. The fixed panel width already reserves room for it.
 - **A/B panels (rule 8, automatic):** Panel B (no LIVE TRADE block) while no Emtt trade is open;
   Panel A (with the LIVE TRADE block) appears only while an Emtt position identified by the
   **Magic number** input (default `20251007`) is open. There is no manual panel-switch input.
 - **Draggable** panel anchored top-left; 1-second timer refresh plus per-tick price updates
   (rule 14, 15).
-- **M5 / M15 / M30 only** (rule 4d, 19): on any other timeframe the panel still draws in full,
-  every data field shows `--`, the Price Row stays live, and the STATUS line shows
-  `Incompatible chart. Switch to M5/M15/M30.` in red.
+- **M5 / M15 / M30 only** (rule 4d, 19): on any other timeframe the panel still draws in full —
+  same rows, header and separators, same size — the Price Row stays live, and the STATUS line
+  shows `Incompatible chart. Switch to M5/M15/M30.` in red. Phase 1 has no values at all
+  (labels only), so it draws no `--` placeholders either; the rule-19 `--` fields arrive with
+  the phases that produce the values.
 - **Clean removal:** all `Emtt_*` chart objects are deleted when the EA leaves the chart
   (Done-When item 4).
 - Style per §6: `Segoe UI` (12pt rows, SIGNAL BUY/SELL 14pt), exact colour table, fixed panel
   width, WHY/STATUS text wrapping, no extra rows.
 
-Later phases replace the dummy field values; the panel contract lives in
+Later phases fill the labelled rows with real values; the panel contract lives in
 `SEmttPanelData` (`Include/Emtt/Emtt_Dashboard.mqh`).
