@@ -29,7 +29,7 @@ At MT5 Chart.
 
 ---
 
-## 5. Phase 1 — Layout (APPROVED)
+## 5. Phase 1 — Layout (APPROVED — IMPLEMENTED 2026-10-07)
 
 ### Panel A — order OPEN
 
@@ -173,7 +173,12 @@ There are only these two panels. No other panel exists.
 
 ## 8. Phase 1 — Done When
 
-- Panel draws on a live MT5 chart with dummy values, exactly as Panel A and Panel B above.
+**Status: IMPLEMENTED (2026-10-07)** — `Experts/Emtt.mq5` + `Include/Emtt/Emtt_Dashboard.mqh`.
+Per author instruction the panel shows **labels only, no dummy values**; the fixed width is
+measured from the section 5 row formats so the panel keeps its final size. Live data kept:
+header, Bid/Ask/Spread Price Row, red incompatible-timeframe STATUS.
+
+- Panel draws on a live MT5 chart with labels only (no dummy values, per author), exactly as Panel A and Panel B above.
 - Price Row matches the terminal's Bid / Ask / Spread in realtime.
 - Panel switches between A and B correctly, and is draggable.
 - All objects are removed cleanly when the EA is removed from the chart.
