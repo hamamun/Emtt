@@ -10,39 +10,40 @@ MT5 Trading Expert Adviser — **Author:** Ham · **Coder:** Arena · Living spe
 | `Include/Emtt/*.mqh` | `MQL5\Include\Emtt\` |
 
 Copy the folders into your MT5 data folder, open `Experts/Emtt.mq5` in MetaEditor and compile,
-then attach **Emtt** to a chart. The EA includes its header with the quoted relative path
-`../Include/Emtt/Emtt_Dashboard.mqh`, which resolves both in this checkout and inside the
-terminal's data folder (spec §4a, §4b).
+then attach **Emtt** to a chart. The EA includes its headers with quoted relative paths, which
+resolve both in this checkout and inside the terminal's data folder (spec §4a, §4b).
 
 ## Phase 1 — Layout (implemented)
 
-Implements `Emtt.md` sections 4–8:
+`Include/Emtt/Emtt_Dashboard.mqh` remains the renderer and owns the fixed panel layout.
+It provides the draggable, wrapped, fixed-width panel, palette, labels, and clean chart-object
+removal. The renderer was not changed for Phase 2.
 
-- **Layout-only skeleton:** every row shows its label only (`Regime:`, `SIGNAL:`,
-  `Entry:`, `Ticket:` …) — **no dummy values exist anywhere**, so nothing fake can
-  leak into later phases; real values arrive with the phases that produce them.
-  The fixed panel width is measured from §5's row formats (measure-only templates,
-  never displayed), so the panel already has its final size.
-- **Price Row** tracks the terminal's Bid / Ask / Spread in realtime, exactly as the terminal
-  shows them (§6 rule 2). Phase 1 draws **no `►` marker**: the dealing side (BUY → `►Ask`,
-  SELL → `►Bid`, WAIT → none) is only known once a signal exists, so the marker arrives with
-  the phase that produces signals. The fixed panel width already reserves room for it.
-- **A/B panels (rule 8, automatic):** Panel B (no LIVE TRADE block) while no Emtt trade is open;
-  Panel A (with the LIVE TRADE block) appears only while an Emtt position identified by the
-  **Magic number** input (default `20251007`) is open. There is no manual panel-switch input,
-  and the block follows the trade, not the chart timeframe (rules 20, 21).
-- **Draggable** panel anchored top-left; 1-second timer refresh plus per-tick price updates
-  (rule 14, 15).
-- **M5 / M15 / M30 only** (rule 4d, 19): on any other timeframe the panel still draws in full —
-  same rows, header and separators, same size — the Price Row stays live, and the STATUS line
-  shows `Incompatible chart. Switch to M5/M15/M30.` in red. Phase 1 has no values at all
-  (labels only), so it draws no `--` placeholders either; the rule-19 `--` fields arrive with
-  the phases that produce the values. Rule 19 blanks the signal side only: if an Emtt trade is
-  open its LIVE TRADE block keeps showing on any chart timeframe (rules 20, 21).
-- **Clean removal:** all `Emtt_*` chart objects are deleted when the EA leaves the chart
-  (Done-When item 4).
-- Style per §6: `Segoe UI` (12pt rows, SIGNAL BUY/SELL 14pt), exact colour table, fixed panel
-  width, WHY/STATUS text wrapping, no extra rows.
+- The Phase-1 A/B layout still follows the Emtt magic-number position; manual trades are ignored.
+- The Price Row uses the terminal's current Bid / Ask / Spread. A dealing-side marker waits for
+  a signal-producing phase.
+- M5 / M15 / M30 are the only analysis timeframes. Other charts retain the full panel, live
+  Price Row, and red incompatible-timeframe STATUS.
+- The existing settings remain **Magic number** (`20251007`) and **Auto Trading**.
 
-Later phases fill the labelled rows with real values; the panel contract lives in
-`SEmttPanelData` (`Include/Emtt/Emtt_Dashboard.mqh`).
+## Phase 2 — Foundation and regime detection (implemented)
+
+`Emtt_DynamicParams.mqh` classifies normalized symbols, ranks fixed ATR(14) readings into
+hysteretic volatility buckets, resolves the approved class/bucket parameter matrix, applies the
+regime confidence threshold, and journals changes. The parameter state is replayed from closed-bar
+history on initialization so restarts and timeframe changes reconstruct the same state.
+
+`Emtt_Regime.mqh` implements the closed-bar regime precedence and two-bar confirmation, broker
+trading-session checks, the GMT-based Asia/London/New York clock with each market's DST rules, and
+pre-signal WHY / STATUS text. `Experts/Emtt.mq5` wires these measurements into the existing panel
+contract. Phase 2 adds no signal, order, or trade-management logic and no new inputs.
+
+Run the portable checks with:
+
+```sh
+python -m unittest discover -s tests -v
+python tools/mql5_compile_smoke.py
+```
+
+The CI smoke check resolves the MQL5 include graph and validates source structure; if
+`METAEDITOR_PATH` is configured it also invokes MetaEditor for a native compile.
