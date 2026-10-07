@@ -50,8 +50,8 @@ string EmttGlyph(const int code)
 
 //+------------------------------------------------------------------+
 //| Everything the panel needs from the EA for one render pass.       |
-//| Phase 1 fills this with dummy values; later phases replace the    |
-//| content without touching the renderer.                            |
+//| Phase 1 is layout-only: labels with no values. Later phases fill  |
+//| real content here without touching the renderer.                  |
 //+------------------------------------------------------------------+
 struct SEmttPanelData
   {
