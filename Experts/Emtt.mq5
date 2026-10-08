@@ -1,19 +1,20 @@
 //+------------------------------------------------------------------+
 //|                                                       Emtt.mq5   |
 //|                Emtt - MT5 Trading Expert Adviser                 |
-//|          Phase 2: foundation, parameters and market regime        |
+//|        Phase 3: ML-adaptive Supertrend (K-Means) context         |
 //|                Spec: Emtt.md | Author: Ham | Coder: Arena        |
 //+------------------------------------------------------------------+
 #property copyright   "Author: Ham | Coder: Arena"
 #property link        ""
-#property version     "1.10"
+#property version     "1.20"
 #property description "Emtt V1.0 - MT5 Trading Expert Adviser."
-#property description "Phase 2: dynamic parameters, session clock and market regime."
+#property description "Phase 3: ML-adaptive Supertrend (K-Means) direction context."
 #property description "Allowed analysis timeframes: M5 / M15 / M30 only."
 
 #include "../Include/Emtt/Emtt_Dashboard.mqh"
 #include "../Include/Emtt/Emtt_DynamicParams.mqh"
 #include "../Include/Emtt/Emtt_Regime.mqh"
+#include "../Include/Emtt/Emtt_Supertrend.mqh"
 
 input long InpMagicNumber=20251007;   // Magic number
 input bool InpAutoTrading=true;       // Auto Trading ON/OFF
@@ -57,6 +58,7 @@ double g_bandLower[];
 //--- Foundation state -----------------------------------------------
 SEmttDynamicState          g_dynamic;
 SEmttRegimeState           g_regimeState;
+SEmttSupertrendState       g_supertrend;
 SEmttBrokerOffsetState     g_brokerOffset;
 SEmttRegimeMeasurements    g_snapshotMeasurements;
 EEmttRegime                g_snapshotRegime=EMTT_REGIME_UNKNOWN;
@@ -70,7 +72,9 @@ string                     g_sessionName="--";
 datetime                   g_lastClosedBarTime=0;
 long                       g_evaluatedBarSequence=0;
 int                        g_historyAvailable=0;
-int                        g_historyRequired=EMTT_HISTORY_REQUIRED;
+// 11.8: the gate is timeframe-derived (training window + ATR(50) baseline),
+// so this carries the resolved 250 / 300 / 350 instead of a fixed constant.
+int                        g_historyRequired=EMTT_ST_WINDOW_BASE+EMTT_ST_ATR_BASELINE_BARS;
 
 //+------------------------------------------------------------------+
 //| Chart timeframe and header helpers                                |
@@ -327,7 +331,7 @@ bool EmttIndicatorsCalculated(const int count)
 bool EmttCopyFullHistory(const int closedBars,MqlRates &rates[])
   {
    if(!EmttIndicatorsCalculated(closedBars) ||
-      closedBars<EMTT_HISTORY_REQUIRED)
+      closedBars<g_historyRequired)
       return false;
    if(!EmttCopyRates(closedBars,rates)) return false;
    if(!EmttCopySeries(g_hAtr10,0,closedBars,g_atr10)) return false;
@@ -367,13 +371,14 @@ bool EmttReplayClosedHistory()
   {
    if(!g_handlesReady && !EmttCreateIndicators())
       return false;
+   g_historyRequired=EmttHistoryRequired(g_timeframe);
    const int totalBars=Bars(g_symbol,g_timeframe);
    int closedBars=totalBars-1;
    if(closedBars<0) closedBars=0;
    g_historyAvailable=closedBars;
-   if(g_historyAvailable>EMTT_HISTORY_REQUIRED)
-      g_historyAvailable=EMTT_HISTORY_REQUIRED;
-   if(closedBars<EMTT_HISTORY_REQUIRED)
+   if(g_historyAvailable>g_historyRequired)
+      g_historyAvailable=g_historyRequired;
+   if(closedBars<g_historyRequired)
      {
       g_snapshotReady=false;
       return false;
@@ -388,10 +393,20 @@ bool EmttReplayClosedHistory()
 
    SEmttDynamicState replayDynamic;
    SEmttRegimeState replayRegime;
+   SEmttSupertrendState replaySupertrend;
    EmttDynamicReset(replayDynamic);
    EmttRegimeReset(replayRegime);
+   EmttSupertrendReset(replaySupertrend);
 
-   const int evaluationCount=closedBars-(EMTT_HISTORY_REQUIRED-1);
+   // Phase 3 is replayed on the same path, so a restart reproduces the same
+   // clusters, multiplier, direction, line and score (11.9). The ATR window
+   // is rebuilt per bar at the period that bar resolved to.
+   const int supertrendWindow=EmttSupertrendWindow(g_timeframe);
+   double supertrendAtr[];
+   ArrayResize(supertrendAtr,closedBars);
+   ArraySetAsSeries(supertrendAtr,true);
+
+   const int evaluationCount=closedBars-(g_historyRequired-1);
    const int oldestIndex=evaluationCount-1;
    int periodSeconds=PeriodSeconds(g_timeframe);
    if(periodSeconds<1) periodSeconds=1;
@@ -431,6 +446,18 @@ bool EmttReplayClosedHistory()
                                                   first || afterGap);
       EmttDynamicUpdateThreshold(replayDynamic,regime,sequence,barTime,false);
 
+      // Phase 3 runs after the bucket and atrPeriod of this bar are known and
+      // before the snapshot, exactly as in the incremental path.
+      if(index+supertrendWindow<=closedBars)
+        {
+         for(int k=index;k<index+supertrendWindow;k++)
+            supertrendAtr[k]=EmttAtrAt(replayDynamic.atrPeriod,k);
+         EmttSupertrendAdvance(replaySupertrend,rates,supertrendAtr,index,
+                               g_assetClass,replayDynamic.atrPeriod,
+                               replayDynamic.volatility,g_timeframe,sequence,
+                               barTime,first || afterGap,false);
+        }
+
       if(index==0)
          EmttSetSnapshot(measurements,regime,percentile,barTime);
       previousBarTime=barTime;
@@ -440,10 +467,11 @@ bool EmttReplayClosedHistory()
 
    g_dynamic=replayDynamic;
    g_regimeState=replayRegime;
+   g_supertrend=replaySupertrend;
    g_snapshotVolatility=g_dynamic.volatility;
    g_evaluatedBarSequence=sequence;
    g_lastClosedBarTime=rates[0].time;
-   g_historyAvailable=EMTT_HISTORY_REQUIRED;
+   g_historyAvailable=g_historyRequired;
    PrintFormat("Emtt | Parameters resolved | symbol %s | class %s | volatility %s | ATR %d | ER %d | KAMA %d/%d/%d | confidence threshold %d%% | regime %s | bar %s",
                g_symbol,EmttAssetClassName(g_dynamic.assetClass),
                EmttVolatilityName(g_dynamic.volatility),g_dynamic.atrPeriod,
@@ -451,6 +479,15 @@ bool EmttReplayClosedHistory()
                g_dynamic.kamaSlow,g_dynamic.confidenceThreshold,
                EmttRegimeName(g_snapshotRegime),
                TimeToString(g_snapshotBarTime,TIME_DATE|TIME_MINUTES));
+   if(g_supertrend.ready)
+      PrintFormat("Emtt | Supertrend replayed | window %d closed bars (%s x%.2f) | ATR period %d | cluster %s | multiplier %s | direction %s | score %.2f | bar %s",
+                  g_supertrend.window,TfName(g_timeframe),
+                  EmttLookbackScale(g_timeframe),g_supertrend.atrPeriod,
+                  EmttStClusterName(g_supertrend.cluster),
+                  EmttStMultiplierText(g_supertrend.multiplier),
+                  EmttStDirectionName(g_supertrend.direction),
+                  g_supertrend.score,
+                  TimeToString(g_snapshotBarTime,TIME_DATE|TIME_MINUTES));
    return true;
   }
 
@@ -527,13 +564,14 @@ bool EmttProcessLatestClosedBar(const bool forceFirstEvaluation)
   {
    if(!g_handlesReady && !EmttCreateIndicators())
       return false;
+   g_historyRequired=EmttHistoryRequired(g_timeframe);
    const int totalBars=Bars(g_symbol,g_timeframe);
    int closedBars=totalBars-1;
    if(closedBars<0) closedBars=0;
    g_historyAvailable=closedBars;
-   if(g_historyAvailable>EMTT_HISTORY_REQUIRED)
-      g_historyAvailable=EMTT_HISTORY_REQUIRED;
-   if(closedBars<EMTT_HISTORY_REQUIRED)
+   if(g_historyAvailable>g_historyRequired)
+      g_historyAvailable=g_historyRequired;
+   if(closedBars<g_historyRequired)
      {
       g_snapshotReady=false;
       return false;
@@ -581,6 +619,19 @@ bool EmttProcessLatestClosedBar(const bool forceFirstEvaluation)
                            forceFirstEvaluation || afterGap);
    EmttDynamicUpdateThreshold(g_dynamic,regime,sequence,barTime,true);
 
+   // Phase 3: after the bucket / atrPeriod of this bar, before the snapshot.
+   // Closed bars only - the per-tick path never reaches this function.
+   const int supertrendWindow=EmttSupertrendWindow(g_timeframe);
+   MqlRates supertrendRates[];
+   double supertrendAtr[];
+   if(EmttCopyRates(supertrendWindow,supertrendRates) &&
+      EmttCopySeries(EmttAtrHandle(g_dynamic.atrPeriod),0,supertrendWindow,
+                     supertrendAtr))
+      EmttSupertrendAdvance(g_supertrend,supertrendRates,supertrendAtr,0,
+                            g_assetClass,g_dynamic.atrPeriod,
+                            g_dynamic.volatility,g_timeframe,sequence,barTime,
+                            forceFirstEvaluation || afterGap,true);
+
    EmttSetSnapshot(measurements,regime,percentile,barTime);
    g_lastClosedBarTime=barTime;
    g_evaluatedBarSequence++;
@@ -594,6 +645,8 @@ void EmttResetMarketState()
   {
    EmttDynamicReset(g_dynamic);
    EmttRegimeReset(g_regimeState);
+   EmttSupertrendReset(g_supertrend);
+   g_historyRequired=EmttHistoryRequired(g_timeframe);
    g_marketWasClosed=false;
    g_snapshotReady=false;
    g_snapshotRegime=EMTT_REGIME_UNKNOWN;
@@ -837,6 +890,13 @@ void FillPanel(SEmttPanelData &d)
          d.status=EmttStatusForPending(g_regimeState.pending);
          if(d.status=="")
             d.status=EmttStatusForRegime(g_snapshotRegime);
+
+         // Phase 3 (11.8): Row 9 appends the Supertrend clause and Row 10
+         // reads the context status once a direction exists. The score, the
+         // trailing reference and the facts are never displayed (rule 11).
+         d.why=EmttWhyWithSupertrend(d.why,g_supertrend);
+         if(g_supertrend.ready && g_supertrend.direction!=0)
+            d.status=EmttStatusForSupertrend();
         }
      }
 
@@ -889,8 +949,10 @@ int OnInit()
    g_symbol=ChartSymbol(0);
    g_timeframe=(ENUM_TIMEFRAMES)ChartPeriod(0);
    g_assetClass=EmttClassifySymbol(g_symbol);
+   g_historyRequired=EmttHistoryRequired(g_timeframe);
    EmttDynamicReset(g_dynamic);
    EmttRegimeReset(g_regimeState);
+   EmttSupertrendReset(g_supertrend);
    EmttJournalTimeframeContext();
    EmttCreateIndicators();
 

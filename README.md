@@ -38,6 +38,26 @@ trading-session checks, the GMT-based Asia/London/New York clock with each marke
 pre-signal WHY / STATUS text. `Experts/Emtt.mq5` wires these measurements into the existing panel
 contract. Phase 2 adds no signal, order, or trade-management logic and no new inputs.
 
+## Phase 3 — ML-adaptive Supertrend (implemented)
+
+`Include/Emtt/Emtt_Supertrend.mqh` computes Supertrend bands in-house from the closed bars and the
+ATR buffers the EA already copies — no custom indicator, no `.ex5`, no DLL. It clusters the training
+window's raw ATR values with K-Means (K = 3, seeded from the window's own 10th / 50th / 90th
+nearest-rank percentiles, max 20 Lloyd iterations) into **Calm / Normal / Wild**, learns one ATR
+multiple per cluster from the candidates `2.0 / 2.5 / 3.0 / 3.5 / 4.0`, and publishes
+`direction / line / cluster / multiplier / score` plus `barsSinceFlip`, `flipCount` and
+`distanceATRs`. The training window is Emtt's first **lookback** parameter, so layer 2 of the
+parameter engine scales it to 200 / 250 / 300 closed bars on M5 / M15 / M30 and the single history
+gate becomes 250 / 300 / 350 candles. The multiplier obeys the 9.2.3 guard rails — one change, then
+two quiet closed bars, every change journaled, never outside the candidate set — while direction,
+cluster and score stay live readings.
+
+Direction is context, not a signal: Row 9 gains ` | <Cluster> (Supertrend <direction>)` and Row 10
+reads `Watching — Supertrend context only, no signal yet`. Rows 2–7 and 11–14 stay label-only, the
+score and the trailing reference are never displayed, and the EA still draws nothing but the panel.
+State is rebuilt by replaying closed bars, so a restart, a timeframe round-trip or a chart replay
+reproduces the same clusters, multiplier, direction, line and score.
+
 Run the portable checks with:
 
 ```sh
