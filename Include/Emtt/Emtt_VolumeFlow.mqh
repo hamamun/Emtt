@@ -142,6 +142,16 @@ bool EmttVfValidPositive(const double value)
    return(EmttVfValid(value) && value>0.0);
   }
 
+// 15.4 / 15.6: a closed bar's volume is MqlRates.tick_volume - the only
+// volume MT5 carries on every feed, and what the spec's `volume_i` means.
+// MqlRates has no `volume` member, and real_volume is not fetched (15.6:
+// true tick-level volume is out of scope). This is the single place the
+// field is read, so the choice cannot drift per call site.
+double EmttVfBarVolume(const MqlRates &bar)
+  {
+   return((double)bar.tick_volume);
+  }
+
 double EmttVfClamp01(const double value)
   {
    if(!MathIsValidNumber(value))
@@ -460,7 +470,7 @@ bool EmttVfComputeProfile(const MqlRates &rates[],const int index,
      {
       if(rates[current].low<rangeLow) rangeLow=rates[current].low;
       if(rates[current].high>rangeHigh) rangeHigh=rates[current].high;
-      volume+=rates[current].volume;
+      volume+=EmttVfBarVolume(rates[current]);
      }
    totalVolume=volume;
    if(rangeHigh<=rangeLow || totalVolume<=0.0)
@@ -476,7 +486,7 @@ bool EmttVfComputeProfile(const MqlRates &rates[],const int index,
       int bin=0;
       if(!EmttVfBinIndex(typical,rangeLow,width,bin))
          return false;
-      bins[bin]+=rates[current].volume;
+      bins[bin]+=EmttVfBarVolume(rates[current]);
      }
 
    int pocBin=0;
@@ -536,7 +546,7 @@ double EmttVfBarDelta(const MqlRates &bar)
    const double range=bar.high-bar.low;
    if(range<=0.0)
       return 0.0;
-   return bar.volume*(2.0*(bar.close-bar.low)/range-1.0);
+   return EmttVfBarVolume(bar)*(2.0*(bar.close-bar.low)/range-1.0);
   }
 
 //+------------------------------------------------------------------+
@@ -792,7 +802,7 @@ void EmttVfComputePriorPoc(SEmttVolumeFlowState &state,
    while(end<ArraySize(rates) &&
          EmttVfSessionAnchor(rates[end].time)==previousAnchor)
      {
-      if(rates[end].volume>0.0)
+      if(EmttVfBarVolume(rates[end])>0.0)
          positiveBars++;
       end++;
      }
@@ -831,7 +841,7 @@ void EmttVfRebuildSession(SEmttVolumeFlowState &state,
    const int runEnd=EmttVfSessionRunEnd(rates,index,anchor);
    for(int current=index;current<runEnd;current++)
      {
-      const double volume=rates[current].volume;
+      const double volume=EmttVfBarVolume(rates[current]);
       const double typical=(rates[current].high+rates[current].low+
                             rates[current].close)/3.0;
       state.sessionVolume+=volume;
@@ -1000,7 +1010,7 @@ void EmttVfClassify(SEmttVolumeFlowState &state,const MqlRates &rates[],
    double deltaSum=0.0;
    for(int current=index;current<index+windowBars;current++)
      {
-      volumeSum+=rates[current].volume;
+      volumeSum+=EmttVfBarVolume(rates[current]);
       deltaSum+=EmttVfBarDelta(rates[current]);
      }
    if(volumeSum<=0.0)
@@ -1079,7 +1089,7 @@ bool EmttVolumeFlowAdvance(SEmttVolumeFlowState &state,
      }
    else
      {
-      const double volume=rates[index].volume;
+      const double volume=EmttVfBarVolume(rates[index]);
       const double typical=(rates[index].high+rates[index].low+
                             rates[index].close)/3.0;
       state.sessionVolume+=volume;
