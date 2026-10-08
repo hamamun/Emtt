@@ -410,6 +410,18 @@ no levels, no orders.
 Inputs stay **Magic number + Auto Trading** — Phase 3 adds none. No new indicator handle: Supertrend is computed from
 the ATR buffers the EA already copies. The panel header string stays `Emtt V1.0` — only the `#property` lines change.
 
+Exact wiring points in `Experts/Emtt.mq5` — Phase 3 adds no others:
+
+- one `SEmttSupertrendState` global, reset in `EmttResetMarketState()` alongside `EmttDynamicReset()` /
+  `EmttRegimeReset()`;
+- trained + advanced for each bar **inside** the existing `EmttReplayClosedHistory()` loop and again in
+  `EmttProcessLatestClosedBar()`, after `EmttBuildMeasurements` / `EmttReadCurrentMeasurements` and after
+  `EmttDynamicUpdateVolatility` (so it sees the bucket and `atrPeriod` of that bar), before `EmttSetSnapshot`;
+- read only in `FillPanel()` for the Row 9 clause and the Row 10 status choice;
+- `OnTick()` gains nothing; `EmttReleaseIndicators()` / `OnDeinit()` gain nothing (no handles, no files to release).
+- The header is included as `#include "../Include/Emtt/Emtt_Supertrend.mqh"` — the same quoted, repo-relative form as
+  the three existing includes, never an angle-bracket `<…>` path (4b).
+
 ### 11.2 Rules for this phase
 
 1. **Panel only.** Emtt draws no other chart object in this phase — no line, rectangle, arrow or chart label. Its only
@@ -442,8 +454,11 @@ Per closed bar `i` (series indexing, `i+1` = the older bar), for multiplier `m`:
 ### 11.4 K-Means — exact definition
 
 - **Input:** the raw ATR values (`atrPeriod`) of the training window's closed bars. No normalisation, no smoothing.
-- **K = 3.** Seeds = the 10th / 50th / 90th percentile of that window. Standard Lloyd iterations, **max 20**, stop when
-  no centre moves more than `1e-9 × window mean`. Centres sorted ascending → **Calm / Normal / Wild**.
+- **K = 3.** Seeds = the 10th / 50th / 90th percentile of that window, taken by **nearest-rank on the window sorted
+  ascending**: `seed(q) = sorted[ceil(q / 100 × N) − 1]`, 0-based, `N` = window length. This is a quantile **of the
+  set**, not the rank percentile of 9.2.2 — `EmttPercentileRank` must not be reused for it. Standard Lloyd iterations,
+  **max 20**, stop when no centre moves more than `1e-9 × window mean`. Centres sorted ascending → **Calm / Normal /
+  Wild**; a retrain always restarts from these three seeds, never from the previous centres.
 - **Current cluster** = the centre nearest the newest closed bar's ATR; an exact tie resolves to the **calmer** centre.
 - **Sparse guard:** a cluster holding fewer than 5 members never owns a learned multiplier — the nearest populated
   cluster's multiplier is used instead and the reason is journaled.
@@ -455,13 +470,18 @@ Per closed bar `i` (series indexing, `i+1` = the older bar), for multiplier `m`:
 
 - **Candidates:** `2.0 / 2.5 / 3.0 / 3.5 / 4.0` ATR multiples. The candidate set **is** the range — identical for every
   asset class, and no value outside it can ever be selected.
-- For each candidate, replay 11.3 across the training window and take the maximal runs of equal direction as segments:
+- For each candidate, replay 11.3 across the training window and take the maximal runs of equal direction as segments.
+  A segment **starts** at the close of the bar whose direction differs from the bar before it and **ends** at the close
+  of the last bar still carrying that direction — the bar that flips it away belongs to the next segment, never this one.
+  Within a segment:
   - `segReturn = direction × (closeEnd − closeStart) / ATR at segment start`
   - `meanReturn` = mean over segments at least 1 closed bar long
   - `noise = segmentCount / (windowBars / 10)`
   - `score = meanReturn − 0.10 × noise` (a small, fixed whipsaw penalty)
 - Winner = highest `score`; a tie goes to the **larger** (smoother) multiplier. One winner is stored per cluster; the
-  live value is the winner belonging to the current cluster.
+  live value is the winner belonging to the current cluster. `meanReturn` of a window with no completed segment keeps
+  the cluster's previous value rather than inventing one; on the very first evaluation an unlearned cluster starts at
+  **3.0**, the middle of the candidate set.
 - Selection reads closed bars inside the window only — never the bar after the window, never index 0.
 - **Guard rails of 9.2.3 apply to this value:** one change, then the same parameter stays put for 2 closed bars, every
   change journaled, never outside the candidate set. The pause governs the **multiplier only** — direction and current
@@ -469,8 +489,8 @@ Per closed bar `i` (series indexing, `i+1` = the older bar), for multiplier `m`:
 
 ### 11.6 What Phase 3 publishes — the component contract
 
-This is the shape every later component phase copies. The EA keeps one state struct; nothing in it is displayed beyond
-what 11.8 allows.
+This is the shape every later component phase copies. `Emtt_Supertrend.mqh` owns one `SEmttSupertrendState`, the EA
+keeps a single instance of it; nothing in it is displayed beyond what 11.8 allows.
 
 - `direction` (+1 / −1 / 0), `line` (the trailing reference, in price), `cluster` (Calm / Normal / Wild), `multiplier`.
 - **Facts, not only a label:** `barsSinceFlip`, `flipCount` in the window, `distanceATRs`
@@ -562,7 +582,8 @@ arguments; the header reads no chart, no panel and no EA global. The EA owns one
 asserting, without MT5: band and direction rules on a fixed series; seed quantiles, ascending clusters, tie → calmer,
 sparse fallback; scoring, tie → larger multiplier, never outside the candidate set; the 2-closed-bar pause on the
 multiplier and its absence on readings; the TF-scaled windows 200 / 250 / 300 and the history gate 250 / 300 / 350;
-score formula bounds and the `flat → 0` rule; the Row 9 and Row 10 strings.
+score formula bounds and the `flat → 0` rule; the nearest-rank seed rule; segment boundaries (the flipping bar belongs
+to the next segment); the `3.0` default for an unlearned cluster; the Row 9 and Row 10 strings.
 Same file also models the 9.2.3 matrix resolution, its clamping and the pause rule — implemented in Phase 2 but never
 covered by the portable suite.
 
