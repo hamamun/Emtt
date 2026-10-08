@@ -187,7 +187,7 @@ header, Bid/Ask/Spread Price Row, red incompatible-timeframe STATUS.
 
 ## 9. Phase 2 — Foundation + Dynamic Parameter Engine + Market Regime Detection
 
-**Status: APPROVED (2026-10-07) — PENDING IMPLEMENTATION.**
+**Status: IMPLEMENTED (2026-10-07).**
 
 The foundation every later phase consumes: Emtt first works out **what it is trading** and
 **what kind of market it is in**, and derives every internal indicator setting from that.
@@ -367,7 +367,7 @@ session trading block, trade management, self-learning and parameter-optimizatio
 
 ## 10. Phase 2 — Done When
 
-**Status: PENDING.**
+**Status: IMPLEMENTED (2026-10-07).**
 
 - Panel shows live Regime (Row 1), session (Row 8), WHY (Row 9) and STATUS (Row 10) on M5 / M15 / M30.
 - Regime labels flip at the right times and are stable: the same closed bar always reads the same.
