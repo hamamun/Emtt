@@ -1225,6 +1225,13 @@ implemented. The portable bullets are proven by `python -m unittest discover -s 
 `python tools/mql5_compile_smoke.py`; the live-terminal bullets are the author's to confirm on a real MT5 chart,
 exactly as sections 10 and 12 were, and the status stamps of this section are appended only when they pass.
 
+**Status: IMPLEMENTED (2026-10-08) — VERIFIED BY THE AUTHOR.** Working as specified, confirmed by Ham on
+2026-10-08; the MetaEditor compile and the on-chart checks of this section are settled by that live run, exactly
+as sections 10 and 12 were. Phase 4 is closed; no later phase reopens it. Sources at close:
+`Include/Emtt/Emtt_SMC.mqh` (sha256 `1691c9239274`) and the Phase 4 wiring in `Experts/Emtt.mq5`
+(sha256 `ca0bf6d396c3`); `python -m unittest discover -s tests -v` → 85 tests, all passing (12 Phase 2 +
+44 Phase 3 + 29 Phase 4); `python tools/mql5_compile_smoke.py` green on the branch.
+
 **Parser check: REQUIRED AT DELIVERY (Hard Rule 3).** `python tools/mql5_parser_check.py` must exit `0` with
 `0 syntax errors` on the Phase 4 sources — the built-in negative control rejected first, then `Emtt_SMC.mqh` and the
 Phase 4 wiring in `Experts/Emtt.mq5` reported clean, with their sha256 and node counts recorded here as they were in
@@ -1270,3 +1277,707 @@ sections 8, 10 and 12.
 - `python -m unittest discover -s tests -v` and `python tools/mql5_compile_smoke.py` pass, with the Phase 4 header and
   markers in the CI contract, the no-drawing guard enforced, and the Phase 1 dashboard digest plus every Phase 2 and
   Phase 3 marker still asserted.
+
+---
+
+## 15. Phase 5 — Volume Flow (Volume Profile + CVD + VWAP) and Multi-Timeframe Agreement
+
+**Status: SPEC APPROVED (2026-10-08) — BUILD AUTHORISED.** The section 14 gate is cleared: the author confirmed
+Phase 4 complete and verified on 2026-10-08. On the same date the author ordered **both** components of this
+section — the money-flow reading and the higher-timeframe check — into **one phase**, because both are
+observation-only (no orders, no new rows, no new risk) and both follow the exact component pattern of Phases 3
+and 4. Design and **every number in this section** remain delegated to the builder (continued from Phase 4:
+"you are the expert / builder / architecture of Emtt, so you finalize"), under four standing decisions carried
+as rules here:
+
+1. **no chart drawing of any kind** (13.2 rule 1, standing);
+2. **dynamic parameters** through the four layers of 9.2.3 (13.10, standing);
+3. **compact Row 9 clauses that may wrap**, one level shown, so the user always understands what is happening
+   (13.11, standing);
+4. **the phase is delivered whole** — all of 15.3 to 15.9 in one change set, nothing partial, no sub-phases
+   (13.1 Delivery, standing).
+
+On 2026-10-08 the author finalized the three open design questions of this section by delegation to the builder
+("being the architecture and master of creating this EA, you decide what will be good for real money trading"):
+the CVD stays the **closed-bar estimate** of 15.6 (tick-level CVD remains with the trade-management phase,
+15.16); the naked POC is the **previous session's** unvisited POC (15.5 — session-based, stable for the whole
+session, the textbook SMC meaning of the word); and the HTF mapping stays **M5 → M15 / M15 → H1 / M30 → H4**
+(15.8). These are carried as rules of this section.
+
+Emtt works out **where the money actually went and whether the bigger chart agrees**: the session's fair price
+(VWAP), the price band where most of the session's volume traded (volume profile — POC / value area), the level
+price has not revisited yet (naked POC), whether aggressive buying or selling dominates right now (CVD), and —
+on the chart one size up — whether the trend, the market mood and the structure there support what the current
+chart shows. All of it is **context, not a signal** — no BUY/SELL, no confidence figure, no Entry / SL / TP, no
+orders.
+
+### 15.1 Files
+
+| File | Change |
+|---|---|
+| `Include/Emtt/Emtt_VolumeFlow.mqh` | new — session anchor, session VWAP, volume profile (POC / VAH / VAL), prior-session naked POC, close-position CVD, `volumeFlowScore` |
+| `Include/Emtt/Emtt_MTF.mqh` | new — higher-timeframe context (Phase 2 / 3 / 4 state re-run on the HTF's own closed bars), `mtfScore` |
+| `Experts/Emtt.mq5` | wired into the existing closed-bar path, the one-second timer, and `FillPanel()`; `#property version` → `1.40`, one `#property description` line updated to `Phase 5: closed-bar volume flow (VWAP, profile, CVD) and higher-timeframe agreement.` |
+| `tests/phase5_reference.py` + `tests/test_phase5_reference.py` | new — MT5-free mirror of 15.3–15.10, same pattern as Phases 2–4; scope in 15.15 |
+| `tools/mql5_compile_smoke.py` | contract list gains the two new headers plus the Phase 5 markers of 15.15; the Phase 1 dashboard guard and every Phase 2 / 3 / 4 marker stay |
+| `README.md` | one Phase 5 paragraph |
+
+`Include/Emtt/Emtt_Dashboard.mqh` is **not touched** and stays byte-identical (its sha256 guard in
+`tools/mql5_compile_smoke.py` keeps enforcing that): rule 12's wrapping and rule 13's growing height are already
+in the renderer, so a three-line WHY needs no renderer change. `Emtt_DynamicParams.mqh`, `Emtt_Regime.mqh`,
+`Emtt_Supertrend.mqh` and `Emtt_SMC.mqh` are **not touched** and stay byte-identical — Phase 5 consumes them,
+it never edits an approved module. Sections 1–14 are **not rewritten**; only status stamps are appended there as
+phases are implemented and verified. Inputs stay **Magic number + Auto Trading** — Phase 5 adds none. No new
+file, no new GlobalVariable (the Phase 2 threshold-freeze key stays exactly as it is). The panel header string
+stays `Emtt V1.0` — only the `#property` lines change.
+
+**One deliberate exception to the "no new indicator handle" pattern of Phases 3 and 4:** the higher-timeframe
+context cannot read the chart's handles (they belong to the chart timeframe), so the MTF context owns its own
+**HTF handle set, an exact mirror of `EmttCreateIndicators()` on the higher timeframe** — `iATR` 10 / 14 / 21 /
+28 / 50, `iAMA` 9 / 13 / 21 / 26 / 34 / 50 with the same fixed fast/slow `2, 30` constants, and `iBands` 20 /
+2.0, all created on `(g_symbol, htf)`. The set is created lazily when the MTF context first initialises after a
+reset and released by `EmttMtfFree()`, which `EmttReleaseIndicators()` calls and which `EmttResetMarketState()`
+also calls. No handle is created on the **chart** timeframe beyond the existing twelve, and the MTF context is
+the only code that touches its own set.
+
+**.github/workflows/phase2.yml needs no edit** and no `phase5.yml` is created: it discovers `tests/` and runs
+the smoke check, so the new tests are picked up on their own.
+
+Exact wiring points in `Experts/Emtt.mq5` — Phase 5 adds no others:
+
+- `#include "../Include/Emtt/Emtt_VolumeFlow.mqh"` is placed **after** the `Emtt_SMC.mqh` include — the header
+  reuses the non-static session-window and DST helpers of `Emtt_Regime.mqh` (9.2.7 stays defined in exactly one
+  place) and `EmttLookbackScale()` from `Emtt_Supertrend.mqh`;
+- `#include "../Include/Emtt/Emtt_MTF.mqh"` is placed **last** — it references the Phase 2 / 3 / 4 state types
+  and advance functions, all included before it;
+- three new globals, each declared exactly once: `SEmttVolumeFlowState g_volumeFlow;`,
+  `SEmttMtfState g_mtf;`, `SEmttMtfContext g_mtfContext;` — reset in `EmttResetMarketState()` alongside the
+  existing resets;
+- `EmttVolumeFlowAdvance(...)` is called for each bar **inside** the existing `EmttReplayClosedHistory()` loop
+  and again in `EmttProcessLatestClosedBar()`, after `EmttSmcAdvance` and before `EmttSetSnapshot` — the same
+  loop position pattern as Phases 3 and 4, seeing that bar's bucket and `atrPeriod`;
+- `EmttMtfAdvance(g_mtf,g_mtfContext,g_symbol,g_assetClass,g_timeframe,g_evaluatedBarSequence,...)` is called in
+  both places immediately after the VolumeFlow advance (it polls the last closed HTF bar and advances only when
+  it changed — 15.8), **and** once per second from `EmttRefreshFoundation()` immediately before
+  `UpdatePanel()`. The timer call is a bar-time comparison (`iTime`) — a poll, not a measurement; the full
+  advance runs only when the HTF's last closed bar time changed and reads only closed HTF bars (rule 4 of 15.2);
+- the EA-local `EmttResolveHistoryRequired()` gains one term in its existing `MathMax` —
+  `EmttVfHistoryRequired(g_assetClass,bucket,timeframe)` (15.11). `EmttHistoryRequired()` and
+  `EmttSmcHistoryRequired()` are not edited;
+- `FillPanel()` gains two Row 9 clause appends, two Row 10 status overrides and the terminal line — the exact
+  composition of 15.10, no other change to `FillPanel()`;
+- `OnTick()` gains nothing (still `UpdatePanel()` only); `OnDeinit()` gains nothing beyond the
+  `EmttReleaseIndicators()` chain already present.
+
+**Read in this order before coding:** 4 (where files live, timeframe limit), 5 (the panel contract), 6
+(rules 1–21 — units, points, distances, refresh, palette, rule 11 "no extra rows", rule 19 incompatible
+charts), 9.2.3 (the four layers, the three parameter classes and the guard rails Phase 5 must obey), 9.2.7
+(the session clock the volume flow anchors on), 9.2.8 (the `--` honesty rule and the loading gate), 11.6 and
+13.9 (the component contract this phase copies), 11.11 and 13.14 (the design seam this phase closes), 13.11 and
+13.12 (clause and journal discipline), then 15 in full. **Section 16 is the definition of done** — every bullet
+in it must hold before the phase is called implemented.
+
+**This section is self-contained.** It was written from `Emtt.md` alone: every number, rule, format and journal
+line Phase 5 needs is defined here. No other document in this repository is a source for this phase, and nothing
+outside `Emtt.md` may be consulted to fill a gap — if a detail is missing, it is missing on purpose and belongs
+to a later phase (15.16).
+
+**Delivery:** one change set containing exactly the rows of the table above — the two new headers, the EA
+wiring, the two test files, the CI contract, `README.md`. No other file, no refactor of Phase 1, 2, 3 or 4
+beyond the wiring points listed. The phase is delivered **whole** (the author's standing decision of 13.1
+Delivery): 15.3 to 15.9 all land in this one change set — session anchor, VWAP, profile and naked POC, CVD,
+`volumeFlowScore`, the HTF context, `mtfScore` and all panel wiring — with nothing left partial and nothing
+deferred. What is genuinely **not** in this phase is listed in 15.16.
+
+### 15.2 Rules for this phase
+
+1. **Panel only — a standing decision, not a phase limit.** Emtt draws no chart object other than its panel
+   objects: no line, rectangle, arrow or chart label, in this phase **or any later one**, unless the author
+   writes such a rule. Every level this phase finds (VWAP, POC, VAH / VAL, the naked POC, the HTF readings) is
+   consumed as a number or a word in the clauses, and verified through the journal of 15.12, which carries every
+   anchor, flip and rebuild with its price and its bar time — the same discipline that replaced chart drawing in
+   13.2 rule 1.
+2. **No layout change** — rules 11–17 stand: no new row, fixed width, `Segoe UI`, sizes, palette, colours all as
+   is. WHY keeps its default 2 lines and **may wrap to 3 or more** — the full Row 9 of 15.10 is the longest row
+   the panel has carried, and rule 12 / rule 13 already allow the wrap and the height growth; the panel width
+   never changes.
+3. **Rows 2–7 stay label-only.** The LIVE TRADE block keeps its Phase 2–4 behaviour (detected by magic number,
+   rows 11–14 label-only). Nothing about orders changes.
+4. **Closed bars only**, index 0 never read; the per-tick path stays `UpdatePanel()` only — no measurement on
+   ticks. The MTF poll in the one-second timer is a bar-time comparison, not a measurement, and its advance
+   reads only closed HTF bars.
+5. **Nothing invented** — a field carries a measured value or `--`, and a clause part that has not been measured
+   is omitted, as rule 19 and 9.2.8 already require. A level Emtt has not measured from closed bars does not
+   exist, and is never shown, guessed or extrapolated.
+6. Both components belong to the **Measurement** class of 9.2.3: adjusted by class + timeframe + volatility,
+   **never by the regime**, and they feed nothing back into the bucket, the regime, the Supertrend or the
+   structure. The MTF readings are pure outputs — the HTF context writes into its own state only.
+7. **Components are never reconciled** (11.8, 13.2 rule 7). Regime, Supertrend, structure, flow and the HTF
+   reading may all disagree on screen at once, and each shows exactly what it measured. No wording, colour,
+   ordering or suppression may be used to make them look consistent.
+8. **No repainting, ever.** A session's VWAP and CVD are running sums over that session's closed bars, reset
+   only at the journaled session re-anchor of 15.3 (a rule-driven reset, not a revision); the profile, the
+   magnet, the CVD classification and every HTF reading are decided once per closed bar and never revised. If
+   new bars change an earlier answer, the earlier answer stands and the new bars produce their own.
+
+### 15.3 Session anchor — shared by VWAP and CVD
+
+The sessions are the back-to-back windows of 9.2.7, each following its own market's clock and its own daylight
+saving; this section adds no clock of its own.
+
+- **Session start (UTC):** for a closed bar time `t`, the **anchor** is the latest session open among the
+  sessions whose window contains `t`, where Asia opens at **07:00 Sydney local**, London at **07:00 London
+  local** and New York at **07:00 New York local** — each candidate day's offsets computed with the DST rules
+  already implemented in `Emtt_Regime.mqh` (`EmttSydneyDstOnDate`, `EmttLondonDstOnDate`,
+  `EmttNewYorkDstOnDate` and the window tests, reused, never restated). Candidate days are `t`'s day and the
+  previous day (an open can be up to half a day before `t`, mirroring the day scan of
+  `EmttSessionNameUtc()`). Where two windows overlap (e.g. the London/NY overlap), the **later open wins**, so
+  the anchor moves exactly with the label Row 8 shows (`London/NY` → anchored to the NY open).
+- **The VWAP and CVD series are session-anchored:** they accumulate only over the closed bars of the current
+  session. On the first closed bar whose anchor differs from the stored one, both running sums reset — a
+  **re-anchor**, journaled once (15.12).
+- **Weekend gap:** no special case. After the weekend the first bar's anchor is simply the open of its session;
+  the series start there.
+- **Purity:** the anchor is a pure function of the bar time and the 9.2.7 calendar. Same bars in → same anchors
+  on any machine at any time (15.12). The anchor is the only time input in the whole phase, and it is a bar
+  property, not "now".
+- **Fetch depth (incremental path):** the advance copies its own closed-bar window for the session-anchored
+  series — `W + EMTT_VF_SESSION_DEPTH + EMTT_VF_FETCH_BUFFER` closed bars via `CopyRates` from shift 1, with
+  `EMTT_VF_SESSION_DEPTH = 160` and `EMTT_VF_FETCH_BUFFER = 10`. The 160-bar depth covers the longest session —
+  the 13-hour Asia window, 156 bars on M5, the longest case — so the previous session's bars of 15.5 are always
+  in reach on every allowed timeframe; the replay path already holds the full history and needs no separate
+  fetch.
+
+### 15.4 Session VWAP
+
+- **Definition:** `VWAP = Σ(typicalPrice_i × volume_i) / Σ(volume_i)` over the closed bars of the current
+  session, where `typicalPrice_i = (high_i + low_i + close_i) / 3` and `volume_i` is the **tick volume** of the
+  closed bar (`MqlRates.volume` — the only volume MT5 carries on a bar; no tick data is fetched).
+- **Running sums:** each closed bar adds `typicalPrice_i × volume_i` and `volume_i` to the session sums; a
+  re-anchor resets both. On the replay path the sums are rebuilt bar by bar from the same formula (15.12), so a
+  restart reproduces the same VWAP.
+- **Ready:** `Σ(volume) > 0` for the session. Before the first positive-volume closed bar there is **no VWAP**
+  and the fair-price clause part is omitted (15.10). A zero-volume feed never gets an invented fair price.
+- **`priceVsVwap`:** the newest closed bar's close strictly above the VWAP → `above`; strictly below →
+  `below`; equal → neither (part omitted).
+- **Standing:** the VWAP is a **reading, not a gate**. It is displayed nowhere except the clause words of
+  15.10 and the journal, and it gates nothing.
+
+### 15.5 Volume profile — POC / value area, and the prior-session naked POC
+
+- **Profile window `W`** (closed bars): the dynamic **lookback** parameter of 15.11. The **current window** is
+  the `W` newest closed bars. The naked POC below is **session-based**, not window-based — it uses the
+  previous session's closed bars of 15.3, not a second window.
+- **Binning:** `EMTT_VF_BINS = 40` bins span the current window's `[windowLow, windowHigh)`. Bin width =
+  `(windowHigh − windowLow) / 40`. Each closed bar's **entire tick volume** is assigned to the **single bin
+  containing its typical price** — bin index = `floor((typicalPrice − windowLow) / width)`, clamped to `39`, so
+  the bar holding `windowHigh` lands in bin 39. No volume is split between bins.
+- **POC** = the bin with the largest volume; an exact tie resolves to the **lower-priced** bin. The published
+  POC price is the **midpoint of that bin**: `windowLow + (binIndex + 0.5) × width`.
+- **Value area (70 %):** starting with the POC bin, `areaVol = vol[POC]`; while `areaVol < 0.70 × totalVolume`,
+  look at the bin immediately **above the area's top** and the bin immediately **below its bottom** (whichever
+  exist) and add the side with the **larger bin volume** (exact tie → the **lower** side), `areaVol +=` the added
+  bin. `VAH` = `windowLow + (topBin + 1) × width` (top edge of the top bin); `VAL` = `windowLow + bottomBin ×
+  width` (bottom edge of the bottom bin). `EMTT_VF_VALUE_AREA = 0.70` is fixed.
+- **Not ready (honest blank):** `windowHigh == windowLow` (a flat window) or `totalVolume == 0` → **no profile
+  reading at all**: the magnet part is omitted, the score's value and magnet terms are 0, and nothing is
+  journaled about the window.
+- **Prior-session POC (the naked POC):** the POC of the **previous session's** closed bars — the session whose
+  anchor precedes the current anchor (15.3) — computed the same way (40 bins over that session's own
+  `[low, high)` and its own total tick volume). It is **naked** while **no closed bar of the current session has
+  traded through it** — i.e. for every current-session bar, not `low_i ≤ priorPoc ≤ high_i`. Once any
+  current-session bar trades through it, it is not naked for the rest of the session. It is **available** only
+  while the copied history holds at least **2 closed bars of the previous session with positive total volume**
+  (a one-bar session stub never publishes a level); before that it is simply not part of the published set — a
+  reading-level fact, never a gate. The level itself is **fixed for the whole current session**: computed once
+  from the previous session's bars, it does not move as bars close — it either stands naked or loses its
+  nakedness. It is a **reading**: the clause may show it, and it is never journaled as a change (15.12).
+- **Magnet:** the published magnet set is `{ session POC, naked POC, VAH, VAL }`, each member present only
+  while its reading exists. The **published magnet** is the member **nearest the newest close** by
+  `|close − level|`. An exact distance tie prefers, in order: naked prior POC, session POC, VAH, VAL. The Row 9
+  clause shows **one** level — this magnet — with its kind and its price in the symbol's own digits (13.11's
+  single-level decision stands).
+
+### 15.6 CVD — close-position estimate from closed-bar tick volume
+
+- **Per-bar delta estimate:** for a closed bar `i`,
+  `Δ_i = volume_i × ( 2 × (close_i − low_i) / (high_i − low_i) − 1 )`, and a bar with `high_i == low_i`
+  contributes `Δ_i = 0`. A bar closing at its high contributes `+volume_i`, at its low `−volume_i`, at its
+  midpoint `0`. This is the closed-bar estimate of aggressive-side volume: where the close sits inside the bar's
+  range says which side did the work. It is deterministic from `MqlRates` alone — no tick data. True tick-level
+  CVD (classifying individual ticks) is explicitly **out of scope**: it belongs to the trade-management phase
+  that is not built, and the only CVD this phase owns is this estimate.
+- **CVD** = `Σ Δ_i` over the closed bars of the current session — session-anchored and re-anchored exactly like
+  the VWAP (15.3), as a running sum.
+- **Classification window:** the last `EMTT_VF_CVD_WINDOW = 10` closed bars of the session, or **all** closed
+  bars of the session when it is younger. Fewer than **2** closed bars in the session → **no CVD reading**
+  (clause part omitted). Within the window: `Vw = Σ volume_i`, `D = Σ Δ_i` (equivalently `cvd_now −
+  cvd_beforeWindow`).
+- **Classification:** `D ≥ +0.25 × Vw` → **up**; `D ≤ −0.25 × Vw` → **down**; otherwise → **flat**.
+  `Vw == 0` → no reading. The band `EMTT_VF_CVD_FLIP = 0.25` is fixed and identical for every class (adjusted
+  by no layer); it keeps a session that trades but drifts from flickering between `up` and `down`.
+- **`flowDirection`** = `+1` / `−1` / `0` per the classification. CVD, its value and its classification are
+  readings: shown only in the clause; a flip is journaled once (15.12) and drives the 3-bar status of 15.10.
+
+### 15.7 What Phase 5 (volume flow) publishes — the component contract
+
+The same shape 11.6 and 13.9 defined and every later component copies. `Emtt_VolumeFlow.mqh` owns one
+`SEmttVolumeFlowState`; the EA keeps a single instance; nothing in it is displayed beyond what 15.10 allows.
+
+- **Readings:** `flowDirection` (+1 / −1 / 0), `vwap` + `priceVsVwap` (above / below / none), `poc`, `vah`,
+  `val`, `priorPoc` + `naked`, `magnetKind` + `magnetPrice`, `sessionAnchor` (UTC) + `sessionName`.
+- **Facts, not only labels:** `cvd`, `windowVolume` (Vw), `netDelta` (D), `barsSinceSessionStart`,
+  `distanceVwapATRs` (`|close − vwap| / ATR`), `distanceMagnetATRs` (distance from the close to the published
+  magnet, in the flow direction, clamped to 0 when price has already reached or passed it), and the
+  `atrPeriod` / `atrValue` / `profileWindow` the reading was made on.
+- **`volumeFlowScore`, a single 0.0–1.0 number**, computed from those closed-bar facts only. Four terms, weights
+  summing to exactly 1.0, `clamp01(x) = max(0, min(1, x))`:
+
+  | Term | Weight | Value |
+  |---|---|---|
+  | **Control** | 0.35 | `clamp01(D / (0.5 × Vw))` with `D` taken in the flow direction (it is positive there by construction) — net one-sidedness of half the window volume or more scores full |
+  | **Fair price** | 0.25 | the close on the flowDirection's side of the VWAP (above for +1, below for −1) → `1.0`; on the opposite side → `0.0`; no VWAP → `0.0` |
+  | **Value area** | 0.20 | flowDirection +1: close `< VAL` → `1.0`, inside the value area → `0.5`, close `> VAH` → `0.0`. FlowDirection −1 mirrors it (above VAH → `1.0`). No profile → `0.0` |
+  | **Magnet proximity** | 0.20 | the nearest magnet **in the flowDirection's direction** (level at or beyond the close): `clamp01(1 − distanceMagnetATRs / 3.0)`; no magnet in that direction → `0.0` |
+
+  `score = 0` whenever `flowDirection` is 0 (flat or no reading).
+
+- **Why the score exists now:** Row 3 (rule 6) is one combined figure, and the phase that fills it sums one such
+  score per component (11.6). Deriving it here costs nothing, changes nothing the user sees, and stops the
+  confidence phase from having to rewrite and re-verify a finished module.
+- **What the score is not:** it gates nothing in this phase, places nothing, and is never shown. It may never
+  adjust a parameter, a bucket, a regime or any other component's value — readings are outputs, not inputs, to
+  the engine of 9.2.3.
+- **Ready:** `ready = true` when the current profile window holds `W` closed bars with `totalVolume > 0` and a
+  valid `atrValue`. Before that, `ready = false`, the score is 0, and 15.10 publishes nothing at all — no
+  partial clause. (The session-based parts — VWAP, CVD — omit themselves independently while the session is
+  young, even once `ready` is true.)
+- Later phases publish the same contract, so the confidence phase only ever sums weights. This section defines
+  no weights for any other component and no combining rule.
+
+### 15.8 Multi-Timeframe Agreement — the higher-timeframe context
+
+This section closes the design seam of 11.11 and 13.14: the Phase 2 / 3 / 4 headers take their state as
+arguments and read no chart, no panel and no EA global, so the **MTF phase owns the change that wraps that
+state into one context per symbol + timeframe** — here, for the one higher timeframe.
+
+- **Mapping (fixed, one code path):** M5 → **M15**, M15 → **H1**, M30 → **H4** — `EmttMtfTimeframe(chartTf)`.
+  Any other chart timeframe returns "no HTF" and the MTF component never publishes (rule 19 already blocks
+  those charts). The mapping is a single table in this one function — nothing elsewhere knows the pairs.
+- **The HTF context re-runs the Phase 2 / 3 / 4 stack on the HTF's own closed bars:**
+  - one `SEmttDynamicState`, one `SEmttRegimeState`, one `SEmttSupertrendState` and one `SEmttSmcState` for the
+    HTF — second instances of the approved headers, which are **not modified** (they take state as arguments);
+  - driven by the HTF `MqlRates` from `CopyRates(g_symbol, htf, 1, fetchCount)` and by the HTF indicator
+    buffers of 15.1 (ATR 10 / 14 / 21 / 28 / 50, KAMA 9 / 13 / 21 / 26 / 34 / 50, band upper / lower), selected
+    by the HTF's own resolved parameters — the HTF bucket comes from the percentile of the **HTF** ATR(14)
+    array, the HTF Supertrend window from `EmttSupertrendWindow(htf)`, and the HTF structure window / swing
+    strength / body period from the same `EmttSmcResolveParameters()` path with `htf` — on H1 and H4,
+    `EmttLookbackScale()` returns the base ×1.0, so the existing function is used as-is and nothing is
+    redefined per timeframe;
+  - the per-HTF-bar measurements are built by an **HTF-context-local twin of the EA's
+    `EmttBuildMeasurements()`** — the identical formulas (in-house ER from the rates, KAMA / ATR / band values
+    from the HTF buffers, ATR(14) vs ATR(50) ratio) with the arrays passed **as arguments**; the twin never
+    reads the EA's chart-timeframe globals (`g_atr14`, `g_kama*`, `g_band*`), which belong to the chart stack;
+  - the HTF walk mirrors the EA's replay loop of `EmttReplayClosedHistory()` bar for bar — percentile →
+    dynamic seed / update → measurements → `EmttRegimeAdvance` (with its own after-gap test on HTF bar times) →
+    threshold update → `EmttSupertrendAdvance` → `EmttSmcAdvance` — and walks the HTF bars **oldest to
+    newest**, starting at the index where the HTF's own requirements are satisfied
+    (`htfBarsFetched − (EmttMtfHistoryRequired(htf) − 1)`).
+- **HTF history requirement:** `EmttMtfHistoryRequired(htf) = max(EmttHistoryRequired(htf),
+  EmttSmcHistoryRequired(htf))` — the existing timeframe-based functions, one code path (with today's matrices
+  this resolves to 300 for M15 and 250 for H1 and H4; the figure is computed, never hardcoded).
+  `fetchCount = EmttMtfHistoryRequired(htf) + EMTT_MTF_FETCH_BUFFER`, `EMTT_MTF_FETCH_BUFFER = 10`.
+- **Cadence:** the HTF context advances **only when the last closed HTF bar changes** — `iTime(g_symbol, htf,
+  1)` compared with the stored HTF bar time:
+  - **full rebuild** (fresh HTF copy, silent walk of all fetched HTF bars, then the one summary journal line of
+    15.12) on init, on a symbol / chart-timeframe change, on market reopen, after a history shortfall reset,
+    and whenever the HTF context's asset class or volatility bucket changes (a change is journaled with its
+    reason — the `Emtt | HTF (<htf>) context rebuilt | …` line of 15.12 — and the walk itself stays silent);
+  - otherwise a **one-HTF-bar advance** per new HTF closed bar, on the same code path, with the MTF header
+    journaling the HTF facts that changed (15.12);
+  - polled (a) on the chart closed-bar path after the VolumeFlow advance and (b) once per second from
+    `EmttRefreshFoundation()` before `UpdatePanel()`. Between HTF closes the MTF state is constant — the
+    display is at most one HTF bar old, which is the honest reading: the last **closed** higher bar is the
+    latest information.
+- **Readiness:** `ready = true` when `htfBarsFetched ≥ EmttMtfHistoryRequired(htf)` **and** every HTF buffer
+  has `BarsCalculated ≥ fetchCount` (the same waiting pattern as `EmttIndicatorsCalculated()`, applied to the
+  HTF set). Not ready → `mtfScore = 0`, the clause is omitted, and nothing is journaled — no partial HTF
+  reading is ever shown.
+- **Determinism:** no RNG, no clock (the HTF walk is a pure function of the HTF bars and buffers), no tick
+  data, no file access. The same HTF bars in → the same HTF regime, the same HTF clusters / multiplier /
+  direction, the same HTF structure and the same `mtfScore`, on any machine, at any time, when replayed.
+
+### 15.9 What Phase 5 (MTF) publishes — the component contract
+
+Same shape again. `Emtt_MTF.mqh` owns one `SEmttMtfState` (the readings and score) and one `SEmttMtfContext`
+(the HTF machinery: the HTF state structs, the HTF bars and buffers, the HTF handle set, the stored HTF bar
+time, the chart sequence of the last evaluation). The EA keeps one of each; nothing is displayed beyond
+15.10.
+
+- **Readings:** `htf` (its name — `M15` / `H1` / `H4`), `htfRegime`, `htfSupertrendDirection` + `htfCluster` +
+  `htfMultiplier`, `htfBias` + `htfZone`, `agrees` (1 = the HTF Supertrend direction equals the chart
+  Supertrend direction at the last evaluation; −1 = opposite; 0 = nothing comparable — the chart Supertrend is
+  flat or not ready), `htfBarTime`.
+- **Facts:** `htfAtrPeriod` / `htfAtrValue`, `htfBarsFetched`, `chartSupertrendDirection` and
+  `chartSmcBias` at the last evaluation, `lastFlipChartSequence` (for the 3-bar status freshness of 15.10),
+  and the HTF measurements behind the HTF regime label.
+- **`mtfScore`, a single 0.0–1.0 number**, computed from those closed-bar facts only. Three terms, weights
+  summing to exactly 1.0:
+
+  | Term | Weight | Value |
+  |---|---|---|
+  | **Direction** | 0.50 | HTF Supertrend direction equals the chart Supertrend direction and both are non-zero → `1.0`; opposite → `0.0`; either flat / not ready → `0.0` |
+  | **Regime** | 0.30 | HTF regime TRENDING → `1.0`; TRANSITION → `0.5`; RANGING → `0.0`; VOLATILE → `0.0`; MARKET CLOSED / unknown → `0.0` |
+  | **Structure** | 0.20 | HTF bias equals the chart SMC bias and both are non-zero → `1.0`; opposite → `0.0`; either one is 0 → `0.5` (nothing to compare is neutral, a broken structure is not) |
+
+  `score = 0` whenever the HTF context is not ready (15.8).
+- **Standing:** identical to 11.6 / 13.9 — the score is never displayed, gates nothing, adjusts nothing, and
+  the confidence phase only ever sums weights. The agreement word in the clause is recomposed live in
+  `EmttWhyWithMtf()` from the stored HTF direction and the **current** chart Supertrend direction passed in as
+  an argument, so the word is never older than the chart's newest closed bar; the **score** keeps the closed
+  facts of the last evaluation.
+
+### 15.10 Panel wiring
+
+The author's standing decision of 13.11 stands: the panel carries both **what Emtt decided** and **the latest
+thing it is doing**, in words short enough to read at a glance; Row 9 carries the decision, Row 10 the latest
+fact; wording stays compact; the WHY block may grow; the panel width never changes; **one level is ever shown**.
+
+- **Row 9 (WHY):** the Phase 2 regime sentence, then ` | `, then the Phase 3 Supertrend clause, then ` | `, then
+  the Phase 4 structure clause, then ` | `, then the **volume-flow clause**, then ` | `, then the **MTF clause**
+  — fixed order. Each clause is appended as ` | <clause>` **only when it is non-empty**; an empty clause appends
+  nothing, and an empty clause never adds a trailing ` | `.
+
+  **Volume-flow clause** — compact, **at most three comma-separated parts**, always in this fixed order, each
+  part omitted when it has not been measured:
+
+  | Part | Values | Omitted when |
+  |---|---|---|
+  | flow | `CVD up` / `CVD down` / `CVD flat` | fewer than 2 closed bars in the session, or zero window volume (15.6) |
+  | fair | `above VWAP` / `below VWAP` | no session VWAP (15.4) |
+  | magnet | `POC <price>` / `naked POC <price>` / `VAH <price>` / `VAL <price>` | no profile reading (15.5) |
+
+  Only **one** level is shown — the published magnet of 15.5 — `<price>` in the symbol's own digits, the same
+  digits the Price Row uses. Examples: `CVD up, above VWAP, POC 1.09020` · `CVD down, below VWAP, naked POC
+  1.08740` · `CVD flat, below VWAP` (the session is young enough that the profile window is not ready yet, so
+  no level part).
+
+  **MTF clause** — compact, **at most three parts**, always in this fixed order:
+
+  | Part | Values | Omitted when |
+  |---|---|---|
+  | htf regime | `<HTF> trending up` / `<HTF> trending down` / `<HTF> ranging` / `<HTF> volatile` / `<HTF> transition` / `<HTF> closed` | HTF not ready (15.8) |
+  | agreement | `agrees` / `disagrees` | HTF not ready, or the chart Supertrend direction is flat (nothing comparable) |
+  | htf zone | `<HTF> Discount` / `<HTF> Premium` / `<HTF> Equilibrium` | HTF not ready, or no HTF dealing range |
+
+  Examples: `H1 trending up, agrees` · `H1 ranging, disagrees, H1 Premium` · `M15 transition`.
+
+  **Whole Row 9, everything ready:** `Efficiency 71/100 and KAMAs aligned up; volatility normal | Wild
+  (Supertrend bullish) | Discount, BOS up, OB 1.08450 | CVD up, above VWAP, POC 1.09020 | H1 trending up,
+  agrees`. It wraps inside the existing fixed width — the WHY block may take its third line (rule 12); the
+  width never changes (rule 13). When a component is not ready, or the market is closed, or the chart is
+  incompatible, its clause is simply absent and Row 9 shows exactly what it showed in Phase 4.
+
+- **Row 10 (STATUS):** precedence stays rule 19 > loading history > `MARKET CLOSED`, then **first non-empty
+  wins**, each inside its own freshness:
+  1. `EmttStatusForMtf()` — `Watching — <HTF> turned <up/down>`: an HTF Supertrend direction flip fresh within
+     the last **3 closed chart bars** (`EMTT_MTF_STATUS_FRESH_BARS = 3`; the state stores the chart sequence of
+     the flip and its own `currentSequence`, the same stored-sequence mechanism as `EmttStatusForSmc()` of
+     13.11). The big picture turning outranks every chart-timeframe fact. No fresh flip → empty.
+  2. `EmttStatusForSmc()` — Phase 4, unchanged (CHoCH > BOS > sweep inside its own 3-bar window).
+  3. `EmttStatusForVolumeFlow()` — `Watching — CVD turned <up/down>`: a flow classification flip (flat → up,
+     up → flat, up → down, and every mirror) fresh within the last 3 closed chart bars. No fresh flip → empty.
+  4. `EmttStatusForSupertrend()` — Phase 3, unchanged.
+  5. The Phase 2 regime / pending lines — unchanged.
+  - **Terminal line:** when `EmttStatusForMtf`, `EmttStatusForSmc` and `EmttStatusForVolumeFlow` are all empty
+    **and** the chart measurement set is fully ready — Supertrend ready with a direction, SMC ready, volume
+    flow ready **and** the HTF ready — the EA sets `Watching — context only, no signal yet`, replacing the
+    Phase 3 terminal wording now that all four components are live. If the volume flow or the HTF is not ready,
+    the Phase 3 line stays — the panel never claims a completeness that has not been measured.
+  - Section 7's `No trade — …` messages still belong to the phase that can place orders.
+- **Rows 1–8 and 11–14 unchanged.** `Expected Duration:` stays empty. The scores, the CVD value, the VWAP
+  price, the POC / VAH / VAL figures, the magnet distance, the HTF cluster / multiplier / ATR, the agreement
+  flag and every other fact of 15.7 / 15.9 appear **nowhere** on the panel beyond the clause words 15.10
+  allows: rule 11 gives them no row.
+- **Incompatible timeframe** (rule 19): unchanged — `--` fields, the red message, the Price Row still live.
+  Rule 19 wins over every volume-flow and MTF state.
+- **Market closed:** unchanged — `Regime: MARKET CLOSED`, no clauses appended (Row 9 reads `--` exactly as in
+  Phase 4), and the VWAP / CVD series are simply not updated while no bars exist.
+- **Nothing invented:** every word in either clause comes from a closed-bar measurement of this phase; the
+  panel never shows a level, a side or an agreement Emtt has not measured.
+
+### 15.11 Rows Phase 5 adds to the parameter table of 9.2.3
+
+The standing decision of 13.10 continues: these numbers are **dynamic**. Emtt starts from standard values and
+then respects the **symbol type** (asset class), the **market condition** (the live volatility bucket) and the
+**chart timeframe** — through the same four layers, the same tables and the same code path as everything else
+in 9.2.3. Nothing is hardcoded per timeframe and no number is fixed by hand for one symbol.
+
+**Layer 1 base matrix (Low / Normal / High volatility) — volume profile window (closed bars, lookback):**
+
+| Parameter | Forex Major | Forex Cross | Metals | Crypto | Indices | Generic |
+|---|---|---|---|---|---|---|
+| Volume profile window | 200 / 200 / 300 | 200 / 200 / 300 | 150 / 200 / 300 | 100 / 150 / 200 | 150 / 200 / 250 | 200 / 200 / 300 |
+
+Why these numbers (the same logic 13.10 gave the structure window): a wilder market needs a **longer** window
+before a volume footprint means anything; crypto and indices turn over faster, so their footprints go stale
+sooner and their window is shorter. The smoothing-style figures below (bins, value area, CVD window and band,
+magnet scale, weights, MTF mapping and weights) are class-independent and fixed, exactly as the displacement
+multiple and the impulse window are.
+
+**Layer 2 (timeframe) applies to the profile window only**, because it is the only **lookback** here:
+`×1.0 / ×1.25 / ×1.5` for M5 / M15 / M30, through the existing `EmttLookbackScale()`, rounded to a whole bar
+**half away from zero** — `MathRound`, never a truncation, never banker's rounding (13.10). Phase 5 hits
+fractional bars where Phase 3 did not: Metals / Indices Low on M15 is `150 × 1.25 = 187.5 → 188`, and Forex
+High on M30 is `300 × 1.5 = 450` before clamping.
+
+**Layer 3 (volatility)** reads the Low / Normal / High column for the current bucket, exactly as 9.2.3 says.
+**Layer 4 (context / regime)** never touches it: the profile window is **Measurement** class.
+
+Resolved volume profile window, Low / Normal / High volatility, as **M5 / M15 / M30**:
+
+| Class | Low | Normal | High |
+|---|---|---|---|
+| Forex Major, Forex Cross, Generic | 200 / 250 / 300 | 200 / 250 / 300 | 300 / 375 / 400 (450 clamped) |
+| Metals, Indices | 150 / 188 / 225 | 200 / 250 / 300 | 300 / 375 / 400 (450 clamped) |
+| Crypto | 100 / 125 / 150 | 150 / 188 / 225 | 200 / 250 / 300 |
+
+**Guard rails of 9.2.3 apply to the profile window:** clamped to `EMTT_VF_WINDOW_MIN = 50` …
+`EMTT_VF_WINDOW_MAX = 400` closed bars after Layer 2 scaling; **one change, then the same parameter stays put
+for the next 2 closed bars** — reusing the existing `EmttCanChangeAt()`; every change journaled with its
+reason. The pause governs the **window only** — the VWAP, the profile, the CVD classification and the score
+are readings and are never delayed or damped by it. **A window change recomputes, it does not guess:** the profile and the score are recomputed from the new
+window's bars — silently, writing no event journals, exactly like the SMC rebuild of 13.10 — so the readings
+after the change are the same as they would have been had the new window been in use all along (the naked POC
+is session-based and is untouched by a window change). Only the window change itself is journaled.
+
+**Fixed, adjusted by no layer** (the same standing as Bollinger (20, 2.0) and the 200-bar volatility window in
+9.2.3): bin count `40` · value area `70%` · CVD comparison window `10` closed bars · CVD flip band
+`±0.25 × window volume` · control scale `0.5 × window volume` · magnet proximity scale `3.0` ATR · the four
+volume-flow weights `0.35 / 0.25 / 0.20 / 0.20` · the volume-flow fetch depth `160` and buffer `10` · the
+prior-session POC minimum of `2` positive-volume bars · the three MTF weights `0.50 / 0.30 / 0.20` · the MTF
+fetch buffer `10` · the MTF status freshness window `3` closed chart bars · the HTF mapping (M5 → M15, M15 →
+H1, M30 → H4).
+
+**Required history — one gate for all measurements (supersedes 13.10's figure only where it is larger).** The
+gate becomes `max(EmttHistoryRequired(tf), EmttSmcHistoryRequired(class,bucket,tf),
+EmttVfHistoryRequired(class,bucket,tf))`, in the existing EA-local `EmttResolveHistoryRequired()` — one code
+path, no hardcoded figure. `EmttVfHistoryRequired = profileWindow + 2` closed bars, resolved the same way. The previous
+session's depth is **not** part of the gate either: while the copied history holds no previous-session bars
+meeting the availability rule of 15.5, the naked POC simply is not part of the published magnet set — a
+reading-level fact, honestly blank. On the largest
+combination Phase 5 can produce (Forex Major / Cross / Generic, High volatility, after clamping: `400 + 2`) the
+new gate resolves to **302 / 377 / 402 closed bars for M5 / M15 / M30** — larger than the Phase 3 figure of
+250 / 300 / 350, so **the loading line's M changes to the resolved max in exactly those cases**, and it stays
+250 / 300 / 350 everywhere the Supertrend requirement is the larger one (e.g. Normal volatility:
+`200 / 250 / 300 + 2` below 250 / 300 / 350). The gate re-resolves when a closed-bar bucket first exists,
+exactly as it does today. While the gate is open, Rows 1, 9 and 10 behave exactly as they do today — no
+partial, half-measured display.
+
+**HTF history is not part of the chart gate.** The HTF context reads its own history through
+`CopyRates` and is ready when it holds `EmttMtfHistoryRequired(htf)` closed HTF bars with calculated buffers
+(15.8). Until then the MTF clause is omitted — nothing is invented to fill it.
+
+### 15.12 Determinism, replay, state, journal
+
+- **No RNG, no clock (the session anchor of 15.3 excepted — a pure function of bar times and the 9.2.7
+  calendar), no tick data, no file access** in any Phase 5 calculation. Same closed bars in → same anchors,
+  same VWAP, same POC / VAH / VAL, same prior POC and nakedness, same CVD, same classification, same
+  `volumeFlowScore`. Same HTF bars in → same HTF regime, clusters, multiplier, direction, line, structure and
+  `mtfScore` — on any machine, at any time, when replayed.
+- **Chart-timeframe state (volume flow):** reconstructed by replaying the chart's closed bars on init, on a
+  timeframe or symbol change, on market reopen and after any history shortfall reset — using the same replay
+  path Phases 2–4 already use, with the advance call in its 15.1 loop position. The anchor during the replay is
+  **each bar's own anchor** (15.3), so a restart reproduces the same re-anchors and the same running sums.
+- **HTF state:** reconstructed by replaying the HTF's closed bars (15.8) on the same triggers — full rebuild,
+  silent walk, one summary line. State never carries over from a previous session: no new file, no new
+  GlobalVariable (the Phase 2 threshold-freeze key stays exactly as it is).
+- **Bounded cost.** Per closed chart bar the volume-flow work is bounded by `W` bar visits (≤ 400: the current
+  window binned) plus the 40-bin value-area walk, the 10-bar CVD sum and an O(1) nakedness check against the
+  stored prior-session POC — **never** a rescan of the whole copied history per bar. The prior-session POC
+  itself is computed once per session (when the previous session's bars are complete within the fetched depth),
+  not per bar. The full init replay is therefore bounded by roughly
+  `3 × 10⁵` elementary operations once, on the timer — the HTF rebuild adds at most `260 × (its per-bar
+  constant)` once. Nothing may run per tick, where only `UpdatePanel()` belongs; the timer poll is an `iTime`
+  comparison, and its advance happens at most once per HTF bar.
+- **Journal** through the existing `PrintFormat` channel, on the closed bar, with its reason, same shape as
+  Phases 2–4 (`Emtt | <what> | <detail> | bar <time>`):
+  - `Emtt | VWAP re-anchored | session Asia -> London | bar 2026.10.08 14:30`
+  - `Emtt | Flow CVD flat -> up | net +0.31 x window volume | bar 2026.10.08 14:30`
+  - `Emtt | Profile window 200 -> 250 closed bars | volatility NORMAL -> HIGH | bar 2026.10.08 14:30`
+  - `Emtt | MTF context replayed | H1 | 260 closed bars | regime TRENDING (Bullish) | supertrend up (Wild, 3.0) | bias up | zone Discount | score 0.66 | bar 2026.10.08 14:30` — one summary line after every full HTF rebuild, including init
+  - `Emtt | HTF (H1) context rebuilt | volatility NORMAL -> HIGH | bar 2026.10.08 14:30` — an HTF class / bucket change that forces a silent rebuild
+  - `Emtt | HTF (H1) supertrend turned down | cluster Wild, multiplier 3.0 | bar 2026.10.08 15:00` — on the new HTF closed bar that flipped the HTF direction (bar time = that HTF bar's time)
+  - `Emtt | HTF (H1) regime TRENDING (Bullish) -> RANGING | bar 2026.10.08 15:00`
+  - `Emtt | HTF (H1) structure CHoCH down | bias up -> down | bar 2026.10.08 15:00` — HTF BOS / CHoCH events only; the HTF log carries direction-relevant facts, not HTF sweeps
+  - `Emtt | Volume flow replayed | window 250 closed bars (M15 x1.25) | session London | VWAP 1.08612 | CVD up | POC 1.09020 | naked POC -- | score 0.58 | bar 2026.10.08 14:30` — one summary line after the init / reset replay of the chart bars, mirroring the Supertrend and Structure summaries; prices in the symbol's digits, `--` where a reading is not ready
+- **Never journaled:** the per-bar readings themselves (VWAP, POC, VAH / VAL, CVD value and classification,
+  the magnet selection, the naked POC state, the scores — they are re-readable from the clause and from the
+  chart, as 13.12 requires), an HTF re-fetch that produced no change, and any bar where nothing changed. The
+  panel gets no parameter row (rule 11); the journal is the only record, and it must let the author
+  reconstruct exactly what Emtt saw, and at which price, at any moment — this is what replaces chart drawing
+  (13.2 rule 1, standing).
+
+### 15.13 Freeze semantics — unchanged
+
+The frozen set stays exactly as 9.2.3 wrote it (SL / TP multiples, breakeven, trailing, duration, confidence
+threshold). Phase 5 adds **nothing** to it and freezes **nothing** new: while an Emtt position is open, the
+VWAP, the profile, the CVD, the scores and every HTF reading keep measuring and keep journaling live, and the
+panel never freezes (9.2.3, 11.10, 13.13).
+
+### 15.14 Design seam for the later confidence phase
+
+- `Emtt_VolumeFlow.mqh` and `Emtt_MTF.mqh` expose a state struct plus functions that take the symbol,
+  timeframe and closed-bar data as arguments; neither header reads the chart, the panel or an EA global — the
+  same discipline 11.11 and 13.14 imposed.
+- The confidence phase consumes the four published scores — `supertrendScore`, `smcScore`,
+  `volumeFlowScore`, `mtfScore` — and the regime threshold of 9.2.4 as-is, and **it defines the weights and
+  the combining rule**. No component phase is re-opened for it.
+- The HTF mapping is the one MTF owns: a later phase that wants a different relationship (or a second higher
+  timeframe) extends the `EmttMtfTimeframe()` table and adds a second context — it never re-derives the HTF
+  stack of 15.8.
+- Carried forward, **not built now:** the confidence engine, Entry / SL / TP, Risk:Reward, Expected Duration,
+  order placement and trade management, self-learning and parameter-optimization persistence — each owns its
+  own later phase.
+
+### 15.15 Tests
+
+`tests/phase5_reference.py` mirrors 15.3–15.10 in the same style as Phases 2–4, and
+`tests/test_phase5_reference.py` asserts, without MT5:
+
+- **Session anchor:** each session's open on fixed summer and winter dates (Sydney, London and New York DST
+  rules reused from the Phase 2 mirror); the later-open-wins rule in an overlap; the re-anchor on the first bar
+  of a new session; a weekend gap producing no special state; and the anchor's purity — the same bar time
+  always resolves to the same anchor on any run.
+- **VWAP:** the weighted typical-price formula on a fixed series (zero-volume bars ignored in both sums); the
+  running sum equals a from-scratch recompute at every bar; the session reset; not-ready before the first
+  positive-volume bar; `priceVsVwap` above / below / equal.
+- **Profile:** 40-bin assignment by typical price, including the bar holding `windowHigh` landing in bin 39;
+  POC tie → lower bin; the value-area 70% expansion — larger side wins, tie → lower side, one side exhausted;
+  VAH / VAL edge prices; a degenerate window (`windowHigh == windowLow`) and a zero-volume window producing
+  **no** reading; the prior-session POC — computed once per session from the previous session's own bars, the
+  `≥2` positive-volume previous-session-bar availability rule, and the 15.3 fetch-depth rule; the naked rule
+  (a touch by any current-session bar removes nakedness for the rest of the session, and the level itself never
+  moves within the session); magnet nearest-selection by price distance and the tie preference order (naked
+  POC, session POC, VAH, VAL).
+- **CVD:** the close-position delta formula (close at high → `+V`, at low → `−V`, at midpoint → 0,
+  `high == low` → 0); the session-anchored sum and its reset; classification at exactly the `±0.25 × Vw`
+  thresholds (inclusive) and inside the band → flat; fewer than 2 session bars → no reading; `Vw == 0` → no
+  reading; flip detection (flat → up, up → flat, up → down and mirrors).
+- **`volumeFlowScore`:** the four weights sum to exactly `1.0`; every term inside `0.0 … 1.0`; `flat → 0`; the
+  control scale `0.5 × Vw` (full at `|D| = 0.5 × Vw`); the fair-price term direction-sensitive (above VWAP
+  scores for +1 and zero for −1, and the mirror); the value-area term's three levels and its mirror; the
+  magnet scale `3.0` ATR, no magnet in the flow direction → 0, a magnet already reached clamping the distance
+  to 0.
+- **Parameters:** the class / bucket matrix of 15.11 for all six classes and three buckets; Layer 2 scaling of
+  the profile window only, with **half-away-from-zero** rounding — `187.5 → 188` asserted explicitly, and
+  `450 → 400` clamped — and Python's built-in `round()` never used for it; clamping to `50 … 400`; the
+  2-closed-bar pause via the existing `can_change_at`; a window change silently recomputing profile / prior
+  POC / score to match a from-scratch replay at the new window.
+- **History gate:** the three-term `max()` for every class, bucket and timeframe — resolving to **302 / 377 /
+  402** in the worst case and staying **250 / 300 / 350** wherever the Supertrend requirement is the larger
+  one (e.g. Normal volatility); `EmttVfHistoryRequired = window + 2`; the naked POC's previous-session
+  availability — `≥2` positive-volume previous-session bars in the copied history, reading-level, not a gate.
+- **MTF:** the mapping M5 → M15 / M15 → H1 / M30 → H4 and the "no HTF" answer for other timeframes;
+  `EmttMtfHistoryRequired` as the `max()` of the two existing timeframe functions (300 for M15, 250 for H1 and
+  H4 on today's matrices, via the code path — never a constant); the HTF walk reproducing the Phase 2 / 3 / 4
+  state from the same HTF bars (replayed twice → identical regime, direction, bias and score); the direction /
+  regime / structure terms (neutral `0.5` for a zero bias, `0.0` for a flat chart direction, `0.0` for a not
+  ready context); `mtfScore` bounds and `ready` gating (not ready → clause omitted, score 0, no journal line);
+  the live agreement word (stored HTF direction vs a passed-in chart direction, flat chart → part omitted).
+- **Panel text:** every volume-flow clause format and omission rule, the three-part cap, the single-level
+  priority and the digit formatting; every MTF clause format (`<HTF> trending up / down / ranging / volatile /
+  transition / closed`, `agrees` / `disagrees`, `<HTF> Discount / Premium / Equilibrium`) and omission rule;
+  every Row 10 status string and its precedence (MTF flip > SMC CHoCH > SMC BOS > SMC sweep > CVD flip > Phase
+  3 > Phase 2) inside the 3-closed-bar freshness windows, and the terminal line appearing exactly when all four
+  components are ready; rule 19 and the loading gate beating all of them.
+- **Determinism:** the same series replayed twice gives an identical volume-flow state; a restart, a
+  timeframe round-trip and a mid-window parameter change reproduce the same VWAP, POC, CVD classification and
+  score; the HTF context rebuilt twice over the same HTF bars gives the same regime, direction, bias, zone and
+  score.
+
+`tools/mql5_compile_smoke.py` gains the two new headers in its required-source set and asserts at least these
+Phase 5 markers, alongside every existing Phase 2, 3 and 4 marker and the unchanged Phase 1 dashboard digest:
+`EMTT_VF_BINS 40`, `EMTT_VF_VALUE_AREA 0.70`, `EMTT_VF_CVD_WINDOW 10`, `EMTT_VF_CVD_FLIP 0.25`,
+`EMTT_VF_CONTROL_SCALE 0.5`, `EMTT_VF_MAGNET_ATRS 3.0`, `EMTT_VF_WEIGHT_CONTROL 0.35`,
+`EMTT_VF_WEIGHT_FAIR 0.25`, `EMTT_VF_WEIGHT_VALUE 0.20`, `EMTT_VF_WEIGHT_MAGNET 0.20`,
+`EMTT_VF_WINDOW_MIN 50`, `EMTT_VF_WINDOW_MAX 400`, `EMTT_VF_SESSION_DEPTH 160`,
+`EMTT_VF_STATUS_FRESH_BARS 3`, and in the MTF header
+`EMTT_MTF_WEIGHT_DIRECTION 0.50`, `EMTT_MTF_WEIGHT_REGIME 0.30`, `EMTT_MTF_WEIGHT_STRUCTURE 0.20`,
+`EMTT_MTF_FETCH_BUFFER 10`, `EMTT_MTF_STATUS_FRESH_BARS 3`, plus in the EA `#include
+"../Include/Emtt/Emtt_VolumeFlow.mqh"`, `#include "../Include/Emtt/Emtt_MTF.mqh"`,
+`SEmttVolumeFlowState g_volumeFlow;`, `SEmttMtfState g_mtf;`, `SEmttMtfContext g_mtfContext;`,
+`EmttVolumeFlowAdvance(`, `EmttMtfAdvance(`, `EmttWhyWithVolumeFlow(`, `EmttWhyWithMtf(`,
+`EmttVfHistoryRequired(`, an include-order guard (VolumeFlow after SMC, MTF after VolumeFlow), and the
+no-chart-drawing guard of 15.2 rule 1 **extended to both new headers** — the Phase 4 forbidden-token list
+(`ObjectCreate` of any type, `OBJ_TREND`, `OBJ_RECTANGLE`, `OBJ_HLINE`, `OBJ_ARROW`, `OBJ_TEXT`, `OBJ_FIBO*`)
+applied to each — 15.2 rule 1 enforced by the build, not by memory.
+
+### 15.16 Not in this phase
+
+No confidence engine, no weights for any component, no Row 2 / Row 3 values, no Entry / SL / TP, no
+Risk:Reward, no Expected Duration, no order placement or trade management, no tick-level CVD or divergence
+detection (the closed-bar estimate of 15.6 is the only CVD this phase owns), no news or session blocking, no
+alerts, **no chart drawing of any kind**, no self-learning or parameter-optimization persistence, no new
+inputs, no new panel row, no change to the palette, the font, the panel width or any approved module beyond the
+wiring points of 15.1.
+
+---
+
+## 16. Phase 5 — Done When
+
+**Status: SPEC APPROVED (2026-10-08) — NOT YET BUILT.** Every bullet below must hold before the phase is called
+implemented. The portable bullets are proven by `python -m unittest discover -s tests -v` and
+`python tools/mql5_compile_smoke.py`; the live-terminal bullets are the author's to confirm on a real MT5 chart,
+exactly as sections 10, 12 and 14 were, and the status stamps of this section are appended only when they pass.
+
+**Parser check: REQUIRED AT DELIVERY (Hard Rule 3).** `python tools/mql5_parser_check.py` must exit `0` with
+`0 syntax errors` on the Phase 5 sources — the built-in negative control rejected first, then
+`Emtt_VolumeFlow.mqh`, `Emtt_MTF.mqh` and the Phase 5 wiring in `Experts/Emtt.mq5` reported clean, with their
+sha256 and node counts recorded here as they were in sections 8, 10, 12 and 14.
+
+- The VWAP, the POC / VAH / VAL, the prior POC and its nakedness, the CVD and its classification, the
+  `volumeFlowScore`, and every HTF reading come from **closed bars only**; index 0 is never read, and nothing
+  runs on ticks — the MTF timer poll is a bar-time comparison, and its advance reads only closed HTF bars.
+- Nothing repaints: a session's VWAP and CVD are running sums over that session's closed bars, reset only at a
+  journaled session re-anchor; the profile, the magnet, the classification and the HTF readings are never
+  revised. Restart, timeframe round-trip and chart / HTF replay reproduce **identical** anchors, VWAP, profile,
+  CVD classification, score, HTF regime, HTF direction and HTF structure.
+- The profile window follows the class / bucket matrix of 15.11 and Layer 2, changes at most once and then not
+  again for 2 closed bars, stays clamped to `50 … 400`, and every change appears in the journal with its
+  reason. The readings are **never** delayed or damped by that pause.
+- The history gate is the three-term `max()` and resolves to **302 / 377 / 402** in the worst case (250 / 300 /
+  350 wherever the Supertrend requirement is the larger one); the loading line's M is the resolved value, and
+  while the gate is open Rows 1, 9 and 10 behave exactly as they do today.
+- Row 9 reads `<regime sentence> | <Supertrend clause> | <structure clause> | <volume-flow clause> | <MTF
+  clause>`, each clause at most three parts and only one level, and the whole row wraps inside the existing
+  fixed width with no new row, no colour, no size and no font change. Rows 2–7 and 11–14 stay label-only;
+  `Expected Duration:` stays empty.
+- Row 10 shows the precedence of 15.10 (MTF flip > CHoCH > BOS > sweep > CVD flip > Phase 3 > Phase 2) inside
+  the 3-closed-bar freshness windows, the terminal line appears exactly when all four components are ready, and
+  section 7's `No trade — …` messages still do not appear.
+- The scores, the CVD value, the VWAP price, the POC / VAH / VAL figures, the HTF cluster / multiplier / ATR
+  and every other fact of 15.7 / 15.9 appear **nowhere** on the panel beyond the clause words 15.10 allows.
+- Regime, Supertrend, structure, flow and the HTF reading may all disagree on screen at the same time, and each
+  shows exactly what it measured — nothing is worded, coloured or suppressed to make them look consistent.
+- Every session re-anchor, CVD flip, window change, HTF rebuild / flip / regime change / structure event, and
+  both replay summary lines are in the journal with their prices and bar times, so the author can check each
+  one against the chart without Emtt drawing anything.
+- **The EA still draws nothing but the panel** — no line, rectangle, arrow or chart label of any kind — and all
+  panel objects are still removed cleanly when the EA is removed from the chart.
+- `Emtt_Dashboard.mqh`, `Emtt_DynamicParams.mqh`, `Emtt_Regime.mqh`, `Emtt_Supertrend.mqh` and `Emtt_SMC.mqh`
+  are byte-identical; inputs are still Magic number + Auto Trading; there is no new chart-timeframe handle, no
+  new file and no new GlobalVariable; and the MTF context's HTF handle set is created, used and released only
+  by the MTF context.
+- On H1 and other charts rule 19 still wins: `--` fields, red incompatible-timeframe STATUS, nothing measured or
+  shown, Price Row still live and exact.
+- Initialisation with the full replay — chart **and** HTF — stays visibly instant, with no stutter on ticks.
+- On a live MT5 chart, the author confirms what Emtt now says is what the market actually did: the VWAP sits
+  where the session's volume-weighted price actually is; the bars behind `CVD up` show more close-near-the-high
+  volume than close-near-the-low; the POC / value area match the densest traded band visible on the chart; the
+  naked POC is the previous session's densest level, which price has not touched since; and the MTF words match
+  what that timeframe's own chart shows — regime, trend direction and zone — checked by opening the M15 / H1 /
+  H4 chart side by side.
+- `python -m unittest discover -s tests -v` and `python tools/mql5_compile_smoke.py` pass, with the two Phase 5
+  headers and markers in the CI contract, the no-drawing guard extended to both, and the Phase 1 dashboard
+  digest plus every Phase 2, Phase 3 and Phase 4 marker still asserted.
