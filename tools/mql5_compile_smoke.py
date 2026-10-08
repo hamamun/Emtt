@@ -151,6 +151,7 @@ def check_contract(paths: list[Path]) -> None:
         "Include/Emtt/Emtt_DynamicParams.mqh",
         "Include/Emtt/Emtt_Regime.mqh",
         "Include/Emtt/Emtt_Supertrend.mqh",
+        "Include/Emtt/Emtt_SMC.mqh",
     }
     missing = required - relative
     if missing:
@@ -209,6 +210,60 @@ def check_contract(paths: list[Path]) -> None:
     for source, pattern, description in phase3_markers:
         if not re.search(pattern, source):
             raise RuntimeError(f"missing Phase-3 rule: {description}")
+
+    smc = (ROOT / "Include" / "Emtt" / "Emtt_SMC.mqh").read_text()
+    phase4_markers = (
+        (smc, r"EMTT_SMC_DISPLACEMENT_MULTIPLE\s+1\.5", "1.5x displacement multiple"),
+        (smc, r"EMTT_SMC_IMPULSE_BARS\s+3", "three-bar impulse window"),
+        (smc, r"EMTT_SMC_EQUAL_TOLERANCE_ATR\s+0\.10", "0.10 ATR equal-level tolerance"),
+        (smc, r"EMTT_SMC_ZONE_DEADBAND\s+0\.05", "five-percent zone dead band"),
+        (smc, r"EMTT_SMC_MIN_RANGE_ATR\s+1\.0", "one-ATR minimum dealing range"),
+        (smc, r"EMTT_SMC_MAX_ZONES\s+8", "eight-zone capacity"),
+        (smc, r"EMTT_SMC_MAX_SWINGS\s+64", "64 confirmed-swing bound"),
+        (smc, r"EMTT_SMC_WEIGHT_STRUCTURE\s+0\.30", "structure score weight"),
+        (smc, r"EMTT_SMC_WEIGHT_FRESHNESS\s+0\.20", "freshness score weight"),
+        (smc, r"EMTT_SMC_WEIGHT_ZONE\s+0\.20", "zone score weight"),
+        (smc, r"EMTT_SMC_WEIGHT_PROXIMITY\s+0\.15", "proximity score weight"),
+        (smc, r"EMTT_SMC_WEIGHT_SWEEP\s+0\.15", "sweep score weight"),
+        (smc, r"EMTT_SMC_EVENT_AGE_BARS\s+40", "40-bar event age scale"),
+        (smc, r"EMTT_SMC_PROXIMITY_ATRS\s+2\.0", "two-ATR proximity scale"),
+        (smc, r"EMTT_SMC_SWEEP_AGE_BARS\s+20", "20-bar sweep age scale"),
+        (smc, r"EMTT_SMC_CHOCH_TERM\s+0\.6", "CHoCH structure term"),
+        (smc, r"EMTT_SMC_OB_LOOKBACK_DIVISOR\s+3", "OB lookback divisor"),
+        (smc, r"EMTT_SMC_OB_LOOKBACK_MIN\s+10", "OB lookback floor"),
+        (smc, r"EMTT_SMC_WINDOW_MIN\s+20", "structure window floor"),
+        (smc, r"EMTT_SMC_WINDOW_MAX\s+400", "structure window ceiling"),
+        (smc, r"EMTT_SMC_STATUS_FRESH_BARS\s+3", "three-bar status freshness"),
+        (smc, r"EMTT_SMC_SWEEP_MENTION_BARS\s+10", "ten-bar sweep mention window"),
+        (ea, r'#include "\.\./Include/Emtt/Emtt_SMC\.mqh"', "quoted repo-relative Phase-4 include"),
+        (ea, r"SEmttSmcState\s+g_smc;", "exactly one SMC state instance"),
+        (ea, r"EmttSmcAdvance\(", "SMC advanced on the closed-bar path"),
+        (ea, r"EmttWhyWithSmc\(", "Row 9 SMC clause wired into FillPanel"),
+        (ea, r"EmttResolveHistoryRequired\(", "combined SMC/Supertrend history gate"),
+    )
+    for source, pattern, description in phase4_markers:
+        if not re.search(pattern, source):
+            raise RuntimeError(f"missing Phase-4 rule: {description}")
+    if len(re.findall(r"\bSEmttSmcState\s+g_smc\s*;", ea)) != 1:
+        raise RuntimeError("Phase 4 must declare exactly one EA SMC state instance")
+    if ea.find('Emtt_Supertrend.mqh') > ea.find('Emtt_SMC.mqh'):
+        raise RuntimeError("Phase-4 include must follow Emtt_Supertrend.mqh")
+
+    # Rule 13.2 is deliberately machine-enforced. The component can calculate
+    # levels but never creates a chart artifact; panel rendering remains in the
+    # Phase-1 header and its digest is guarded above.
+    forbidden_smc = (
+        r"\bObjectCreate\s*\(",
+        r"\bOBJ_TREND\b",
+        r"\bOBJ_RECTANGLE\b",
+        r"\bOBJ_HLINE\b",
+        r"\bOBJ_ARROW\b",
+        r"\bOBJ_TEXT\b",
+        r"\bOBJ_FIBO\w*\b",
+    )
+    for pattern in forbidden_smc:
+        if re.search(pattern, smc):
+            raise RuntimeError(f"Phase-4 SMC source contains forbidden chart drawing token: {pattern}")
 
 
 def run_metaeditor(paths: list[Path]) -> None:
