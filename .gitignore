@@ -1,0 +1,6 @@
+# Python bytecode caches from tests/ and tools/
+__pycache__/
+*.pyc
+
+# MetaEditor compile log written by tools/mql5_compile_smoke.py
+mql5-compile-smoke.log
