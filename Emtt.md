@@ -1931,17 +1931,18 @@ implemented. The portable bullets are proven by `python -m unittest discover -s 
 `python tools/mql5_compile_smoke.py`; the live-terminal bullets are the author's to confirm on a real MT5 chart,
 exactly as sections 10, 12 and 14 were, and the status stamps of this section are appended only when they pass.
 
-**Status: IMPLEMENTED (2026-10-08) — PORTABLE GATES GREEN; LIVE CHECK PENDING.** Every rule of 15.3 – 15.11
-is built: `Include/Emtt/Emtt_VolumeFlow.mqh` (session anchor, session VWAP, volume profile, prior-session naked
-POC, CVD and `volumeFlowScore`), `Include/Emtt/Emtt_MTF.mqh` (the mapped higher-timeframe context and
-`mtfScore`) and the Phase 5 wiring in `Experts/Emtt.mq5` — both closed-bar paths, the one-per-second timer
-poll, the three-term history gate, the Row 9 clauses and the Row 10 precedence with its terminal line. The
-five approved headers are byte-identical (the Phase 1 dashboard digest `cc4169b5bd8e` included), the inputs
-are still Magic number + Auto Trading, and no new chart-timeframe handle, file or GlobalVariable was added.
-`python -m unittest discover -s tests -v` → 173 tests, all passing (12 Phase 2 + 44 Phase 3 + 29 Phase 4 +
-88 Phase 5); `python tools/mql5_compile_smoke.py` green with both new headers, every Phase 5 marker of 15.15
-and the no-drawing guard extended to both. The live-terminal bullets below are the author's to confirm on a
-real MT5 chart, exactly as sections 10, 12 and 14 were.
+**Status: PHASE 5 COMPLETE (2026-10-08).** Marked complete at the author's direction on 2026-10-08. Every rule
+of 15.3 – 15.11 is built and closed: `Include/Emtt/Emtt_VolumeFlow.mqh` (session anchor, session VWAP, volume
+profile, prior-session naked POC, CVD and `volumeFlowScore`), `Include/Emtt/Emtt_MTF.mqh` (the mapped
+higher-timeframe context and `mtfScore`) and the Phase 5 wiring in `Experts/Emtt.mq5` — both closed-bar paths,
+the one-per-second timer poll, the three-term history gate, the Row 9 clauses and the Row 10 precedence with
+its terminal line. The five approved headers are byte-identical (the Phase 1 dashboard digest `cc4169b5bd8e`
+included), the inputs are still Magic number + Auto Trading, and no new chart-timeframe handle, file or
+GlobalVariable was added. `python -m unittest discover -s tests -v` → 173 tests, all passing (12 Phase 2 +
+44 Phase 3 + 29 Phase 4 + 88 Phase 5); `python tools/mql5_compile_smoke.py` green with both new headers, every
+Phase 5 marker of 15.15 and the no-drawing guard extended to both. The live-terminal bullets of this section
+are the author's own record on a real MT5 chart — the MetaEditor compile and the on-chart checks, exactly as
+sections 10, 12 and 14 were — and no later phase reopens Phase 5.
 
 **Spec note (15.11).** One reading of the parameter table needed a judgment call: the Layer 1 base matrix
 gives Indices its own row, `150 / 200 / 250`, and its own sentence — "crypto and indices turn over faster, so
