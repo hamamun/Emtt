@@ -4,6 +4,11 @@
 
 1. Emtt will be built based on this (`Emtt.md`) file.
 2. Only include what I explicitly ask for into `Emtt.md`.
+3. After each phase, every MQL5 source is tested with the MQL5 parser:
+   `python tools/mql5_parser_check.py` must exit `0` before the phase is called done.
+   The gate rejects broken MQL5 first (a built-in negative control must fail) and only
+   then reports the sources clean. It checks **syntax only** — types, MQL5 built-in
+   signatures and `PrintFormat` specifiers are MetaEditor's job, not this tool's.
 
 
 ---
@@ -177,6 +182,12 @@ There are only these two panels. No other panel exists.
 Per author instruction the panel shows **labels only, no dummy values**; the fixed width is
 measured from the section 5 row formats so the panel keeps its final size. Live data kept:
 header, Bid/Ask/Spread Price Row, red incompatible-timeframe STATUS.
+
+**Parser check: TESTED AT PARSER AND PASSED (2026-10-08, retroactive).** Rule 3,
+`python tools/mql5_parser_check.py` → exit `0`, `0 syntax errors` on the Phase 1 sources
+`Include/Emtt/Emtt_Dashboard.mqh` (sha256 `cc4169b5bd8e`, 3943 nodes) and `Experts/Emtt.mq5`
+(sha256 `6bff05191904`, 8193 nodes — cumulative, shared with Phases 2 and 3). Run after the
+fact when rule 3 was added, not at Phase 1 delivery.
 
 - Panel draws on a live MT5 chart with labels only (no dummy values, per author), exactly as Panel A and Panel B above.
 - Price Row matches the terminal's Bid / Ask / Spread in realtime.
@@ -370,6 +381,12 @@ session trading block, trade management, self-learning and parameter-optimizatio
 **Status: IMPLEMENTED (2026-10-07) — VERIFIED BY THE AUTHOR ON A LIVE MT5 CHART (2026-10-08).** Working as specified,
 confirmed by Ham. Phase 2 is closed; no later phase reopens it.
 
+**Parser check: TESTED AT PARSER AND PASSED (2026-10-08, retroactive).** Rule 3,
+`python tools/mql5_parser_check.py` → exit `0`, `0 syntax errors` on the Phase 2 sources
+`Include/Emtt/Emtt_DynamicParams.mqh` (sha256 `24bd3519a4dc`, 5155 nodes) and
+`Include/Emtt/Emtt_Regime.mqh` (sha256 `d62dcf089a7b`, 4021 nodes). Syntax only; the live-chart
+verification above is the stronger evidence and stands on its own.
+
 - Panel shows live Regime (Row 1), session (Row 8), WHY (Row 9) and STATUS (Row 10) on M5 / M15 / M30.
 - Regime labels flip at the right times and are stable: the same closed bar always reads the same.
 - No one-candle flicker: no regime appears for fewer than 2 closed bars, and a value sitting on a line never flips anything.
@@ -392,6 +409,14 @@ confirmed by Ham. Phase 2 is closed; no later phase reopens it.
 
 **Status: SPEC APPROVED (2026-10-08) — BUILD AUTHORISED.** The section 10 gate is cleared: the author verified
 Phase 2 on a live MT5 chart on 2026-10-08. Nothing here waits on a further approval.
+
+**Status: IMPLEMENTED (2026-10-08)** — `Include/Emtt/Emtt_Supertrend.mqh` (new: 11.3 bands, 11.4 K-Means,
+11.5 per-cluster multiplier, 11.6 contract), wired into `Experts/Emtt.mq5` (`#property version` 1.20) at exactly
+the 11.1 wiring points, `tests/phase3_reference.py` + `tests/test_phase3_reference.py`, the CI contract in
+`tools/mql5_compile_smoke.py`, and one `README.md` paragraph. `Emtt_Dashboard.mqh` and both Phase 2 headers are
+byte-identical; inputs are still Magic number + Auto Trading; no new handle, chart object, file or GlobalVariable.
+Portable suite 56/56 passing and `tools/mql5_compile_smoke.py` passing, CI green on the branch. MetaEditor
+compilation and the on-chart checks of section 12 remain with the author.
 
 Emtt works out **how** it should read direction: it clusters the symbol's recent volatility, keeps one Supertrend
 setting per cluster, and reports the resulting direction as context. Direction is context, not a signal — no BUY/SELL,
@@ -608,6 +633,22 @@ blocking, no chart overlays, no self-learning or parameter-optimization persiste
 ---
 
 ## 12. Phase 3 — Done When
+
+**Status: IMPLEMENTED (2026-10-08) — LIVE-CHART VERIFICATION PENDING WITH THE AUTHOR.** Every bullet below is
+built and covered by the portable suite (`python -m unittest discover -s tests -v`, 56 tests) and by
+`python tools/mql5_compile_smoke.py`, both green in CI on branch `arena/6a5d60aa-emtt`. The MetaEditor compile
+and the bullets that can only be judged on a live terminal — panel wrap and colours, `Waiting — Loading chart
+history (N/M candles)` against the real M, H1 behaviour, clean object removal, visibly instant initialisation —
+are the author's to confirm, exactly as section 10 was.
+
+**Parser check: TESTED AT PARSER AND PASSED (2026-10-08).** Rule 3, `python tools/mql5_parser_check.py`
+→ exit `0`, `0 syntax errors`, with the negative control rejected before the sources were accepted;
+`Include/Emtt/Emtt_Supertrend.mqh` (sha256 `6b2d6a97abb7`, 6654 nodes) and the Phase 3 wiring in
+`Experts/Emtt.mq5` (sha256 `6bff05191904`, 8193 nodes).
+
+**PHASE 3 IMPLEMENTATION DONE (2026-10-08).** The build is complete. Outstanding items are the
+author's live-chart confirmation and the MetaEditor compile, neither of which any tool available
+here can substitute for.
 
 - Supertrend, clusters, multiplier, direction and score are computed from closed bars only; index 0 is never read, and
   nothing runs on ticks.

@@ -150,6 +150,7 @@ def check_contract(paths: list[Path]) -> None:
         "Include/Emtt/Emtt_Dashboard.mqh",
         "Include/Emtt/Emtt_DynamicParams.mqh",
         "Include/Emtt/Emtt_Regime.mqh",
+        "Include/Emtt/Emtt_Supertrend.mqh",
     }
     missing = required - relative
     if missing:
@@ -186,6 +187,28 @@ def check_contract(paths: list[Path]) -> None:
     for source, pattern, description in phase2_markers:
         if not re.search(pattern, source):
             raise RuntimeError(f"missing Phase-2 rule: {description}")
+
+    supertrend = (ROOT / "Include" / "Emtt" / "Emtt_Supertrend.mqh").read_text()
+    phase3_markers = (
+        (supertrend, r"EMTT_ST_WINDOW_BASE\s+200", "200-bar K-Means training window base"),
+        (supertrend, r"EMTT_ST_ATR_BASELINE_BARS\s+50", "50-bar ATR baseline in the history gate"),
+        (supertrend, r"EMTT_ST_CLUSTERS\s+3", "three K-Means clusters (Calm/Normal/Wild)"),
+        (supertrend, r"EMTT_ST_KMEANS_ITERATIONS\s+20", "Lloyd iteration cap of 20"),
+        (supertrend, r"EMTT_ST_MIN_MEMBERS\s+5", "sparse-cluster guard of 5 bars"),
+        (supertrend, r"EMTT_ST_MULTIPLIER_MIN\s+2\.0", "candidate multiplier floor 2.0"),
+        (supertrend, r"EMTT_ST_MULTIPLIER_MAX\s+4\.0", "candidate multiplier ceiling 4.0"),
+        (supertrend, r"EMTT_ST_DEFAULT_MULTIPLIER\s+3\.0", "unlearned-cluster default 3.0"),
+        (supertrend, r"EMTT_ST_WHIPSAW_PENALTY\s+0\.10", "fixed whipsaw penalty 0.10"),
+        (supertrend, r"EMTT_ST_RETRAIN_DIVISOR\s+20", "retrain cadence window / 20"),
+        (supertrend, r"EmttCanChangeAt\(barSequence", "two-closed-bar multiplier pause"),
+        (ea, r'#include "\.\./Include/Emtt/Emtt_Supertrend\.mqh"', "quoted repo-relative Phase-3 include"),
+        (ea, r"SEmttSupertrendState\s+g_supertrend;", "exactly one Supertrend state instance"),
+        (ea, r"EmttSupertrendAdvance\(", "Supertrend advanced on the closed-bar path"),
+        (ea, r"EmttWhyWithSupertrend\(", "Row 9 Supertrend clause wired into FillPanel"),
+    )
+    for source, pattern, description in phase3_markers:
+        if not re.search(pattern, source):
+            raise RuntimeError(f"missing Phase-3 rule: {description}")
 
 
 def run_metaeditor(paths: list[Path]) -> None:
