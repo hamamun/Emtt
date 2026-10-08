@@ -1,14 +1,14 @@
 //+------------------------------------------------------------------+
 //|                                                       Emtt.mq5   |
 //|                Emtt - MT5 Trading Expert Adviser                 |
-//| Phase 4: Market structure (SMC) + ML-adaptive Supertrend context |
+//| Phase 5: closed-bar volume flow + higher-timeframe agreement    |
 //|                Spec: Emtt.md | Author: Ham | Coder: Arena        |
 //+------------------------------------------------------------------+
 #property copyright   "Author: Ham | Coder: Arena"
 #property link        ""
-#property version     "1.30"
+#property version     "1.40"
 #property description "Emtt V1.0 - MT5 Trading Expert Adviser."
-#property description "Phase 4: closed-bar market structure and Supertrend context."
+#property description "Phase 5: closed-bar volume flow (VWAP, profile, CVD) and higher-timeframe agreement."
 #property description "Allowed analysis timeframes: M5 / M15 / M30 only."
 
 #include "../Include/Emtt/Emtt_Dashboard.mqh"
@@ -16,6 +16,8 @@
 #include "../Include/Emtt/Emtt_Regime.mqh"
 #include "../Include/Emtt/Emtt_Supertrend.mqh"
 #include "../Include/Emtt/Emtt_SMC.mqh"
+#include "../Include/Emtt/Emtt_VolumeFlow.mqh"
+#include "../Include/Emtt/Emtt_MTF.mqh"
 
 input long InpMagicNumber=20251007;   // Magic number
 input bool InpAutoTrading=true;       // Auto Trading ON/OFF
@@ -61,6 +63,9 @@ SEmttDynamicState          g_dynamic;
 SEmttRegimeState           g_regimeState;
 SEmttSupertrendState       g_supertrend;
 SEmttSmcState              g_smc;
+SEmttVolumeFlowState       g_volumeFlow;
+SEmttMtfState              g_mtf;
+SEmttMtfContext            g_mtfContext;
 SEmttBrokerOffsetState     g_brokerOffset;
 SEmttRegimeMeasurements    g_snapshotMeasurements;
 EEmttRegime                g_snapshotRegime=EMTT_REGIME_UNKNOWN;
@@ -78,8 +83,9 @@ int                        g_historyAvailable=0;
 // so this carries the resolved 250 / 300 / 350 instead of a fixed constant.
 int                        g_historyRequired=EMTT_ST_WINDOW_BASE+EMTT_ST_ATR_BASELINE_BARS;
 
-// Phase 4 keeps the one loading gate extensible: before volatility has a
-// closed-bar bucket, use the same SMC matrix's worst case for this class.
+// Phase 4 / 5 keep the one loading gate extensible: before volatility has a
+// closed-bar bucket, use the same matrix's worst case for this class. The
+// gate is the max() of the Supertrend, structure and volume-flow needs.
 int EmttResolveHistoryRequired(const ENUM_TIMEFRAMES timeframe)
   {
    EEmttVolatility bucket=EMTT_VOL_HIGH;
@@ -87,7 +93,10 @@ int EmttResolveHistoryRequired(const ENUM_TIMEFRAMES timeframe)
       bucket=g_dynamic.volatility;
    const int supertrendRequired=EmttHistoryRequired(timeframe);
    const int smcRequired=EmttSmcHistoryRequired(g_assetClass,bucket,timeframe);
-   return (int)MathMax(supertrendRequired,smcRequired);
+   const int volumeFlowRequired=EmttVfHistoryRequired(g_assetClass,bucket,
+                                                      timeframe);
+   return (int)MathMax(supertrendRequired,
+                       (int)MathMax(smcRequired,volumeFlowRequired));
   }
 
 //+------------------------------------------------------------------+
@@ -161,6 +170,10 @@ void EmttReleaseIndicators()
    g_hKama50=INVALID_HANDLE;
    g_hBands=INVALID_HANDLE;
    g_handlesReady=false;
+
+   // 15.1: the HTF handle set belongs to the MTF context only and is
+   // released with the chart handles on every context change and on exit.
+   EmttMtfFree(g_mtfContext);
   }
 
 bool EmttCreateIndicators()
@@ -213,6 +226,38 @@ bool EmttCopyRates(const int count,MqlRates &destination[])
    ArraySetAsSeries(destination,true);
    const int copied=CopyRates(g_symbol,g_timeframe,1,count,destination);
    return(copied==count);
+  }
+
+// 15.3: the volume-flow window is copied up to the requested depth - a
+// chart that holds fewer closed bars still reaches the profile window the
+// history gate guarantees, and the session parts stay honestly blank.
+bool EmttCopyRatesUpTo(const int count,MqlRates &destination[])
+  {
+   if(count<=0)
+      return false;
+   ArrayResize(destination,count);
+   ArraySetAsSeries(destination,true);
+   const int copied=CopyRates(g_symbol,g_timeframe,1,count,destination);
+   if(copied<=0)
+      return false;
+   if(copied<ArraySize(destination))
+      ArrayResize(destination,copied);
+   return true;
+  }
+
+bool EmttCopySeriesUpTo(const int handle,const int buffer,const int count,
+                        double &destination[])
+  {
+   if(handle==INVALID_HANDLE || count<=0)
+      return false;
+   ArrayResize(destination,count);
+   ArraySetAsSeries(destination,true);
+   const int copied=CopyBuffer(handle,buffer,1,count,destination);
+   if(copied<=0)
+      return false;
+   if(copied<ArraySize(destination))
+      ArrayResize(destination,copied);
+   return true;
   }
 
 bool EmttValidValue(const double value)
@@ -268,6 +313,20 @@ int EmttKamaHandle(const int period)
    if(period==34) return g_hKama34;
    if(period==50) return g_hKama50;
    return INVALID_HANDLE;
+  }
+
+//+------------------------------------------------------------------+
+//| 15.10 Row 10 wording. The structure context-only line is not a    |
+//| fresh fact: it must not mask a fresh CVD flip or the combined     |
+//| context-only line. Its text is owned by EmttStatusForSmc(), which |
+//| stays byte-identical; only a comparison lives here.               |
+//+------------------------------------------------------------------+
+#define EMTT_ROW10_CONTEXT_ONLY "Watching — context only, no signal yet"
+#define EMTT_ROW10_SMC_CONTEXT  "Watching — structure context only, no signal yet"
+
+bool EmttSmcStatusIsContextOnly(const string status)
+  {
+   return(status==EMTT_ROW10_SMC_CONTEXT);
   }
 
 //+------------------------------------------------------------------+
@@ -413,6 +472,10 @@ bool EmttReplayClosedHistory()
    EmttRegimeReset(replayRegime);
    EmttSupertrendReset(replaySupertrend);
    EmttSmcReset(replaySmc);
+   // Phase 5 is replayed on the same path from a clean state, so a restart
+   // reproduces the same anchor, VWAP, profile, CVD and score (15.12).
+   EmttVfReset(g_volumeFlow);
+   g_mtfContext.rebuildNeeded=true;
 
    // Phase 3 is replayed on the same path, so a restart reproduces the same
    // clusters, multiplier, direction, line and score (11.9). The ATR window
@@ -489,6 +552,20 @@ bool EmttReplayClosedHistory()
                      replayDynamic.atrPeriod,replayDynamic.volatility,
                      g_timeframe,sequence,barTime,first || afterGap,false);
 
+      // Phase 5 volume flow follows the same closed-bar path: it sees this
+      // bar's bucket and atrPeriod and journals nothing while replaying.
+      EmttVolumeFlowAdvance(g_volumeFlow,rates,smcAtr,index,g_symbol,
+                            g_assetClass,replayDynamic.atrPeriod,
+                            replayDynamic.volatility,g_timeframe,sequence,
+                            first || afterGap,false);
+
+      // The higher-timeframe context is polled on the same path; it rebuilds
+      // itself once (and journals its summary) and then stays constant until
+      // the HTF's last closed bar changes (15.8).
+      EmttMtfAdvance(g_mtf,g_mtfContext,g_symbol,g_assetClass,g_timeframe,
+                     sequence,replaySupertrend.direction,replaySmc.bias,
+                     false,true);
+
       if(index==0)
          EmttSetSnapshot(measurements,regime,percentile,barTime);
       previousBarTime=barTime;
@@ -519,6 +596,22 @@ bool EmttReplayClosedHistory()
                   EmttStMultiplierText(g_supertrend.multiplier),
                   EmttStDirectionName(g_supertrend.direction),
                   g_supertrend.score,
+                  TimeToString(g_snapshotBarTime,TIME_DATE|TIME_MINUTES));
+   if(g_volumeFlow.ready)
+      PrintFormat("Emtt | Volume flow replayed | window %d closed bars (%s x%.2f) | session %s | VWAP %s | CVD %s | POC %s | naked POC %s | score %.2f | bar %s",
+                  g_volumeFlow.profileWindow,TfName(g_timeframe),
+                  EmttLookbackScale(g_timeframe),
+                  (g_volumeFlow.sessionName=="" ? "--" :
+                   g_volumeFlow.sessionName),
+                  EmttVfReadingText(g_volumeFlow.hasVwap,g_symbol,
+                                    g_volumeFlow.vwap),
+                  EmttVfFlowText(g_volumeFlow),
+                  EmttVfReadingText(g_volumeFlow.hasProfile,g_symbol,
+                                    g_volumeFlow.poc),
+                  EmttVfReadingText(g_volumeFlow.priorPocAvailable &&
+                                    g_volumeFlow.priorPocNaked,g_symbol,
+                                    g_volumeFlow.priorPoc),
+                  g_volumeFlow.volumeFlowScore,
                   TimeToString(g_snapshotBarTime,TIME_DATE|TIME_MINUTES));
    if(g_smc.ready)
      {
@@ -691,6 +784,28 @@ bool EmttProcessLatestClosedBar(const bool forceFirstEvaluation)
                      g_dynamic.atrPeriod,g_dynamic.volatility,g_timeframe,
                      sequence,barTime,forceFirstEvaluation || afterGap,true);
 
+   // Phase 5 volume flow: its own closed-bar window (the profile window plus
+   // the session depth plus the fetch buffer, 15.3) and the same selected
+   // ATR buffer. Closed bars only - the tick path never reaches this code.
+   const int volumeFlowBars=EmttVfFetchDepth(g_assetClass,
+                                             g_dynamic.volatility,g_timeframe);
+   MqlRates volumeFlowRates[];
+   double volumeFlowAtr[];
+   if(EmttCopyRatesUpTo(volumeFlowBars,volumeFlowRates) &&
+      EmttCopySeriesUpTo(EmttAtrHandle(g_dynamic.atrPeriod),0,
+                         ArraySize(volumeFlowRates),volumeFlowAtr) &&
+      ArraySize(volumeFlowAtr)==ArraySize(volumeFlowRates))
+      EmttVolumeFlowAdvance(g_volumeFlow,volumeFlowRates,volumeFlowAtr,0,
+                            g_symbol,g_assetClass,g_dynamic.atrPeriod,
+                            g_dynamic.volatility,g_timeframe,sequence,
+                            forceFirstEvaluation || afterGap,true);
+
+   // The higher-timeframe context: the same poll as the replay path, with
+   // the chart facts of this evaluation passed in (15.9).
+   EmttMtfAdvance(g_mtf,g_mtfContext,g_symbol,g_assetClass,g_timeframe,
+                  sequence,g_supertrend.direction,g_smc.bias,
+                  forceFirstEvaluation || afterGap,true);
+
    EmttSetSnapshot(measurements,regime,percentile,barTime);
    g_lastClosedBarTime=barTime;
    g_evaluatedBarSequence++;
@@ -706,6 +821,8 @@ void EmttResetMarketState()
    EmttRegimeReset(g_regimeState);
    EmttSupertrendReset(g_supertrend);
    EmttSmcReset(g_smc);
+   EmttVfReset(g_volumeFlow);
+   EmttMtfReset(g_mtf,g_mtfContext); // frees the HTF handle set as well
    g_historyRequired=EmttResolveHistoryRequired(g_timeframe);
    g_marketWasClosed=false;
    g_snapshotReady=false;
@@ -865,6 +982,11 @@ void EmttRefreshFoundation()
      }
 
    EmttSyncFrozenPositionContext();
+   // 15.1: one poll per second - a bar-time comparison in front of the
+   // panel refresh, never a measurement and never a tick handler.
+   EmttMtfAdvance(g_mtf,g_mtfContext,g_symbol,g_assetClass,g_timeframe,
+                  g_evaluatedBarSequence,g_supertrend.direction,g_smc.bias,
+                  false,true);
    UpdatePanel();
   }
 
@@ -965,6 +1087,35 @@ void FillPanel(SEmttPanelData &d)
          const string smcStatus=EmttStatusForSmc(g_smc);
          if(smcStatus!="")
             d.status=smcStatus;
+
+         // Phase 5 (15.10) appends the volume-flow clause and then the MTF
+         // clause, in this fixed order, each only when it is non-empty. The
+         // agreement word is recomposed from the live chart Supertrend
+         // direction, so it is never older than the newest closed bar.
+         d.why=EmttWhyWithVolumeFlow(d.why,g_volumeFlow,digits);
+         d.why=EmttWhyWithMtf(d.why,g_mtf,g_supertrend.direction);
+
+         // Phase 5 Row 10 precedence: MTF flip > CHoCH > BOS > sweep >
+         // CVD flip > Phase 3 > Phase 2, and the combined context-only line
+         // once all four components are ready and nothing is fresh.
+         const string volumeFlowStatus=EmttStatusForVolumeFlow(g_volumeFlow);
+         const string mtfStatus=EmttStatusForMtf(g_mtf);
+         const bool smcFresh=(smcStatus!="" &&
+                              !EmttSmcStatusIsContextOnly(smcStatus));
+         const bool fullContext=(g_supertrend.ready &&
+                                 g_supertrend.direction!=0 && g_smc.ready &&
+                                 g_volumeFlow.ready && g_mtf.ready);
+         if(fullContext && !smcFresh && volumeFlowStatus=="" && mtfStatus=="")
+            d.status=EMTT_ROW10_CONTEXT_ONLY;
+         else
+           {
+            if(volumeFlowStatus!="")
+               d.status=volumeFlowStatus;
+            if(smcFresh)
+               d.status=smcStatus;
+            if(mtfStatus!="")
+               d.status=mtfStatus;
+           }
         }
      }
 
@@ -1022,6 +1173,8 @@ int OnInit()
    EmttRegimeReset(g_regimeState);
    EmttSupertrendReset(g_supertrend);
    EmttSmcReset(g_smc);
+   EmttVfReset(g_volumeFlow);
+   EmttMtfReset(g_mtf,g_mtfContext);
    EmttJournalTimeframeContext();
    EmttCreateIndicators();
 
