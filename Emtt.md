@@ -684,10 +684,18 @@ begin without a further approval.
 **Status: SPEC FINALISED (2026-10-08) — BUILD AUTHORISED.** The section 12 gate is cleared: the author verified
 Phase 3 on a live MT5 chart on 2026-10-08. On the same date the author delegated this phase's design and **every
 number in it** to the builder ("you are the expert / builder / architecture of Emtt, so you finalize"), together with
-three standing decisions that this section carries as rules: **no chart drawing of any kind** (13.2 rule 1),
-**dynamic parameters** that respect symbol class, market condition and chart timeframe (13.10), and a **compact
-Row 9 clause that may wrap onto more lines** (13.11). Nothing here waits on a further approval; the build starts on
-the author's instruction.
+four standing decisions that this section carries as rules:
+
+1. **no chart drawing of any kind** — the author asked whether Emtt needs the visual or the calculation behind it, and
+   the answer under that delegation is the calculation (13.2 rule 1);
+2. **dynamic parameters** — the author's own words: Emtt works from standard values and then respects the symbol type,
+   the market condition and the chart timeframe (13.10);
+3. **a compact Row 9 clause that may wrap onto more lines**, with the panel showing both what Emtt decided and the
+   latest thing it is doing, so the user can understand what is happening (13.11);
+4. **the phase is delivered whole** — all of 13.3 to 13.9 in one phase, with nothing left partial and no splitting into
+   extra sub-phases, because dropping and re-adding phases is a loss of time (13.1 Delivery).
+
+Nothing here waits on a further approval; the build starts on the author's instruction.
 
 Emtt works out **where price sits inside its own structure**: the confirmed turning points, whether the last break
 continued or reversed the trend, the zones price tends to return to, the gaps it tends to fill, the liquidity it has
@@ -740,18 +748,31 @@ loading gate), 11.6 (the component contract this phase copies), 11.8 (Row 9 / Ro
 gate), then 13 in full. **Section 14 is the definition of done** — every bullet in it must hold before the phase is
 called implemented.
 
+**This section is self-contained.** It was written from `Emtt.md` alone: every number, rule, format and journal line
+Phase 4 needs is defined here. No other document in this repository is a source for this phase, and nothing outside
+`Emtt.md` may be consulted to fill a gap — if a detail is missing, it is missing on purpose and belongs to a later
+phase (13.16).
+
 **Delivery:** one change set containing exactly the rows of the table above — the new header, the EA wiring, the two
 test files, the CI contract, `README.md`. No other file, no refactor of Phase 1, 2 or 3 beyond the wiring points
 listed.
+
+The phase is delivered **whole** (the author's decision of 2026-10-08): 13.3 to 13.9 all land in this one change set —
+confirmed swings, BOS / CHoCH, liquidity sweeps and pools, order blocks, fair value gaps, Premium / Discount and the
+`smcScore` — with nothing left partial, nothing deferred to a later phase and no split into sub-phases, because
+dropping and re-adding phases is a loss of time. A delivery that implements part of this section is not a delivery of
+it. What is genuinely **not** in this phase is listed in 13.16, and every item there is a different component, never a
+piece of this one.
 
 ### 13.2 Rules for this phase
 
 1. **Panel only — a standing decision, not a phase limit.** Emtt draws no chart object other than its panel objects:
    no line, rectangle, arrow, channel or chart label, in this phase **or any later one**, unless the author writes
-   such a rule. The author's decision of 2026-10-08 is that Emtt needs the **calculation**, not the visual: every
-   level this phase finds is consumed as a number by later phases, and nothing Emtt decides ever reads a drawing.
-   Verification is provided instead by the Row 9 clause (13.11) and by the journal of 13.12, which carries every
-   level with its price and its bar time.
+   such a rule. The author asked on 2026-10-08 whether Emtt needs the visual or the calculation behind the visual, and
+   left the answer to the builder; the answer is the **calculation**. Every level this phase finds is consumed as a
+   number by later phases, and nothing Emtt decides ever reads a drawing — so a drawing would add work, risk and a new
+   rule while changing no decision Emtt makes. Verification is provided instead by the Row 9 clause (13.11) and by the
+   journal of 13.12, which carries every level with its price and its bar time.
 2. **No layout change** — rules 11–17 stand: no new row, fixed width, `Segoe UI`, sizes, palette, colours all as is.
    WHY keeps its default 2 lines and **may wrap to 3 or more** when the clause makes it long (rule 12 allows it, rule
    13 lets the height grow, and the renderer already does both).
@@ -952,9 +973,10 @@ keeps a single instance of it, and nothing in it is displayed beyond what 13.11 
 
 ### 13.10 Rows Phase 4 adds to the parameter table of 9.2.3
 
-The author's decision of 2026-10-08: these numbers are **dynamic** — they respect the symbol's asset class, the live
-volatility bucket and the chart timeframe, through the same four layers and the same code path as everything else.
-Nothing here is hardcoded per timeframe.
+The author's decision of 2026-10-08: these numbers are **dynamic**. Emtt starts from standard values and then
+respects the **symbol type** (asset class), the **market condition** (the live volatility bucket) and the **chart
+timeframe** — through the same four layers, the same tables and the same code path as everything else in 9.2.3.
+Nothing here is hardcoded per timeframe and no number is fixed by hand for one symbol.
 
 **Layer 1 base matrix (Low / Normal / High volatility):**
 
@@ -1024,6 +1046,11 @@ path, no hardcoded figure, and the phase that finally raises the gate does not h
 open, Rows 1, 9 and 10 behave exactly as they do today — no partial, half-measured display.
 
 ### 13.11 Panel wiring
+
+The author's decision of 2026-10-08: the panel must carry both **what Emtt decided** and **the latest thing it is
+doing**, in words short enough to read at a glance, so that the user can always understand what is happening. Row 9
+carries the decision — the context this component measured — and Row 10 carries the latest action. Wording stays
+compact; growing the WHY block onto a third line is explicitly acceptable, while the panel width never changes.
 
 - **Row 9 (WHY):** the Phase 2 regime sentence, then ` | `, then the Phase 3 Supertrend clause, then ` | `, then the
   **structure clause**. The structure clause is compact and has **at most three comma-separated parts**, always in
