@@ -1452,7 +1452,8 @@ saving; this section adds no clock of its own.
 
 - **Definition:** `VWAP = Σ(typicalPrice_i × volume_i) / Σ(volume_i)` over the closed bars of the current
   session, where `typicalPrice_i = (high_i + low_i + close_i) / 3` and `volume_i` is the **tick volume** of the
-  closed bar (`MqlRates.volume` — the only volume MT5 carries on a bar; no tick data is fetched).
+  closed bar (`MqlRates.tick_volume` — the only volume MT5 carries on a bar; `MqlRates` has no `volume` member,
+  `real_volume` is not fetched, and no tick data is read).
 - **Running sums:** each closed bar adds `typicalPrice_i × volume_i` and `volume_i` to the session sums; a
   re-anchor resets both. On the replay path the sums are rebuilt bar by bar from the same formula (15.12), so a
   restart reproduces the same VWAP.

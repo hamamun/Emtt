@@ -143,6 +143,32 @@ def check_guards(path: Path) -> None:
         raise RuntimeError(f"unterminated preprocessor conditional in {path.relative_to(ROOT)}")
 
 
+RATES_VOLUME_MEMBER_RE = re.compile(r"\.\s*volume\b(?!\w)")
+
+
+def check_mqlrates_volume(paths: list[Path]) -> None:
+    """Reject `MqlRates.volume`, which is not an MQL5 member.
+
+    A bar carries `tick_volume` (what the spec's `volume_i` means) and
+    `real_volume`; there is no `volume` field. Phase 5 reads the volume
+    through EmttVfBarVolume() in Emtt_VolumeFlow.mqh, so any `.volume` access
+    on a rates record is the spec-wording typo that broke the MetaEditor
+    build with seven `undeclared identifier 'volume'` errors. Comments and
+    string literals are blanked first, so only code can trip this.
+    """
+    for path in paths:
+        if path.suffix.lower() not in (".mqh", ".mq5"):
+            continue
+        source = strip_comments_and_strings(path.read_text(encoding="utf-8"))
+        match = RATES_VOLUME_MEMBER_RE.search(source)
+        if match:
+            line = source.count("\n", 0, match.start()) + 1
+            raise RuntimeError(
+                f"{path.relative_to(ROOT)}:{line} reads a `.volume` member; "
+                "MqlRates has tick_volume / real_volume only"
+            )
+
+
 def check_contract(paths: list[Path]) -> None:
     relative = {path.relative_to(ROOT).as_posix() for path in paths}
     required = {
@@ -284,6 +310,8 @@ def check_contract(paths: list[Path]) -> None:
         (phase5_volume_flow, r"EMTT_VF_WINDOW_MAX\s+400", "profile window ceiling"),
         (phase5_volume_flow, r"EMTT_VF_SESSION_DEPTH\s+160", "160-bar session depth"),
         (phase5_volume_flow, r"EMTT_VF_STATUS_FRESH_BARS\s+3", "three-bar flow status freshness"),
+        (phase5_volume_flow, r"EmttVfBarVolume\(", "single MqlRates.tick_volume reader"),
+        (phase5_volume_flow, r"tick_volume", "tick volume as the bar volume source"),
         (phase5_mtf, r"EMTT_MTF_WEIGHT_DIRECTION\s+0\.50", "direction agreement weight"),
         (phase5_mtf, r"EMTT_MTF_WEIGHT_REGIME\s+0\.30", "HTF regime weight"),
         (phase5_mtf, r"EMTT_MTF_WEIGHT_STRUCTURE\s+0\.20", "HTF structure weight"),
@@ -344,6 +372,7 @@ def main() -> int:
     for path in paths:
         check_delimiters(path)
         check_guards(path)
+    check_mqlrates_volume(paths)
     check_contract(paths)
     run_metaeditor(paths)
     print("MQL5 include-layout / structural compile smoke passed:")
