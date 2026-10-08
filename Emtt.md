@@ -367,7 +367,8 @@ session trading block, trade management, self-learning and parameter-optimizatio
 
 ## 10. Phase 2 — Done When
 
-**Status: IMPLEMENTED (2026-10-07).**
+**Status: IMPLEMENTED (2026-10-07) — VERIFIED BY THE AUTHOR ON A LIVE MT5 CHART (2026-10-08).** Working as specified,
+confirmed by Ham. Phase 2 is closed; no later phase reopens it.
 
 - Panel shows live Regime (Row 1), session (Row 8), WHY (Row 9) and STATUS (Row 10) on M5 / M15 / M30.
 - Regime labels flip at the right times and are stable: the same closed bar always reads the same.
@@ -389,8 +390,8 @@ session trading block, trade management, self-learning and parameter-optimizatio
 
 ## 11. Phase 3 — ML-Adaptive Supertrend (K-Means)
 
-**Status: SPEC APPROVED (2026-10-08) — implementation pending.** Build starts only after the author signs off the
-Phase 2 chart verification in section 10.
+**Status: SPEC APPROVED (2026-10-08) — BUILD AUTHORISED.** The section 10 gate is cleared: the author verified
+Phase 2 on a live MT5 chart on 2026-10-08. Nothing here waits on a further approval.
 
 Emtt works out **how** it should read direction: it clusters the symbol's recent volatility, keeps one Supertrend
 setting per cluster, and reports the resulting direction as context. Direction is context, not a signal — no BUY/SELL,
@@ -406,7 +407,8 @@ no levels, no orders.
 | `tools/mql5_compile_smoke.py` | contract list gains the new header; the "dashboard unchanged" guard stays |
 | `README.md` | one Phase 3 paragraph |
 
-`Include/Emtt/Emtt_Dashboard.mqh` is **not touched**. Sections 1–10 of this file are **not rewritten**.
+`Include/Emtt/Emtt_Dashboard.mqh` is **not touched**. Sections 1–10 are **not rewritten** — only status stamps are
+appended there as phases are implemented and verified.
 Inputs stay **Magic number + Auto Trading** — Phase 3 adds none. No new indicator handle: Supertrend is computed from
 the ATR buffers the EA already copies. The panel header string stays `Emtt V1.0` — only the `#property` lines change.
 
@@ -421,6 +423,16 @@ Exact wiring points in `Experts/Emtt.mq5` — Phase 3 adds no others:
 - `OnTick()` gains nothing; `EmttReleaseIndicators()` / `OnDeinit()` gain nothing (no handles, no files to release).
 - The header is included as `#include "../Include/Emtt/Emtt_Supertrend.mqh"` — the same quoted, repo-relative form as
   the three existing includes, never an angle-bracket `<…>` path (4b).
+
+**Read in this order before coding:** 4 (where files live, timeframe limit), 5 (the panel contract), 6 (rules 1–21 —
+units, points, distances, refresh, palette), 9.2.3 (the four layers and the guard rails Phase 3 must obey), 9.2.8 (the
+`--` honesty rule and the loading gate), then 11 in full. **Section 12 is the definition of done** — every bullet in it
+must hold before the phase is called implemented.
+
+**Delivery:** one change set containing exactly the rows of the table above — the new header, the EA wiring, the two
+test files, the CI contract, `README.md`. No other file, no refactor of Phase 1 or Phase 2 beyond the wiring points
+listed. `.github/workflows/phase2.yml` needs no edit and no `phase3.yml` is created: it discovers `tests/` and runs the
+smoke check, so the new tests are picked up on their own.
 
 ### 11.2 Rules for this phase
 
