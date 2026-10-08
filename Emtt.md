@@ -393,6 +393,14 @@ confirmed by Ham. Phase 2 is closed; no later phase reopens it.
 **Status: SPEC APPROVED (2026-10-08) — BUILD AUTHORISED.** The section 10 gate is cleared: the author verified
 Phase 2 on a live MT5 chart on 2026-10-08. Nothing here waits on a further approval.
 
+**Status: IMPLEMENTED (2026-10-08)** — `Include/Emtt/Emtt_Supertrend.mqh` (new: 11.3 bands, 11.4 K-Means,
+11.5 per-cluster multiplier, 11.6 contract), wired into `Experts/Emtt.mq5` (`#property version` 1.20) at exactly
+the 11.1 wiring points, `tests/phase3_reference.py` + `tests/test_phase3_reference.py`, the CI contract in
+`tools/mql5_compile_smoke.py`, and one `README.md` paragraph. `Emtt_Dashboard.mqh` and both Phase 2 headers are
+byte-identical; inputs are still Magic number + Auto Trading; no new handle, chart object, file or GlobalVariable.
+Portable suite 56/56 passing and `tools/mql5_compile_smoke.py` passing, CI green on the branch. MetaEditor
+compilation and the on-chart checks of section 12 remain with the author.
+
 Emtt works out **how** it should read direction: it clusters the symbol's recent volatility, keeps one Supertrend
 setting per cluster, and reports the resulting direction as context. Direction is context, not a signal — no BUY/SELL,
 no levels, no orders.
@@ -608,6 +616,13 @@ blocking, no chart overlays, no self-learning or parameter-optimization persiste
 ---
 
 ## 12. Phase 3 — Done When
+
+**Status: IMPLEMENTED (2026-10-08) — LIVE-CHART VERIFICATION PENDING WITH THE AUTHOR.** Every bullet below is
+built and covered by the portable suite (`python -m unittest discover -s tests -v`, 56 tests) and by
+`python tools/mql5_compile_smoke.py`, both green in CI on branch `arena/6a5d60aa-emtt`. The MetaEditor compile
+and the bullets that can only be judged on a live terminal — panel wrap and colours, `Waiting — Loading chart
+history (N/M candles)` against the real M, H1 behaviour, clean object removal, visibly instant initialisation —
+are the author's to confirm, exactly as section 10 was.
 
 - Supertrend, clusters, multiplier, direction and score are computed from closed bars only; index 0 is never read, and
   nothing runs on ticks.
