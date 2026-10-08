@@ -63,7 +63,15 @@ Run the portable checks with:
 ```sh
 python -m unittest discover -s tests -v
 python tools/mql5_compile_smoke.py
+python tools/mql5_parser_check.py
 ```
 
 The CI smoke check resolves the MQL5 include graph and validates source structure; if
 `METAEDITOR_PATH` is configured it also invokes MetaEditor for a native compile.
+
+The parser check is the Hard Rule 3 gate: it parses every MQL5 source with the real
+[tree-sitter-mql5](https://github.com/mskelton/tree-sitter-mql5) grammar (pinned, cloned and
+compiled into a cache directory on first use) and exits non-zero on any syntax error. It needs
+`pip install tree-sitter`, `git` and a C/C++ compiler; without them it fails loudly rather than
+passing silently. It proves syntax only — types, MQL5 built-in signatures and `PrintFormat`
+specifiers still need MetaEditor.
