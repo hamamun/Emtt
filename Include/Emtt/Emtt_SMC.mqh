@@ -742,7 +742,7 @@ void EmttSmcRefreshSwingFacts(SEmttSmcState &state,const long barSequence)
    // cannot trigger a second event or a second sweep.
    if(state.newestHighSlot>=0)
      {
-      const SEmttSmcSwing &swing=state.swings[state.newestHighSlot];
+      const SEmttSmcSwing swing=state.swings[state.newestHighSlot];
       state.newestHighLevel=swing.level;
       state.newestHighTime=swing.pivotTime;
       state.newestHighPivotIndex=EmttSmcAge(barSequence,swing.pivotSequence);
@@ -755,7 +755,7 @@ void EmttSmcRefreshSwingFacts(SEmttSmcState &state,const long barSequence)
      }
    if(state.newestLowSlot>=0)
      {
-      const SEmttSmcSwing &swing=state.swings[state.newestLowSlot];
+      const SEmttSmcSwing swing=state.swings[state.newestLowSlot];
       state.newestLowLevel=swing.level;
       state.newestLowTime=swing.pivotTime;
       state.newestLowPivotIndex=EmttSmcAge(barSequence,swing.pivotSequence);
@@ -977,7 +977,7 @@ void EmttSmcRebuildPools(SEmttSmcState &state,const long barSequence,
             datetime newestTime=0;
             for(int p=start;p<=end;p++)
               {
-               const SEmttSmcSwing &swing=state.swings[slots[p]];
+               const SEmttSmcSwing swing=state.swings[slots[p]];
                sum+=swing.level;
                if(swing.pivotSequence>newestSequence)
                  {
@@ -1023,7 +1023,7 @@ void EmttSmcRebuildPools(SEmttSmcState &state,const long barSequence,
    long newestSell=-1000000;
    for(int i=0;i<state.poolRecordCount;i++)
      {
-      const SEmttSmcPool &pool=state.pools[i];
+      const SEmttSmcPool pool=state.pools[i];
       if(pool.high)
         {
          if(!state.hasBuyPool || pool.count>state.buyPoolCount ||
@@ -1089,41 +1089,38 @@ bool EmttSmcCheckSweeps(SEmttSmcState &state,const MqlRates &bar,
    // sweep fact when one extraordinary candle touches several levels.
    if(state.newestHighSlot>=0)
      {
-      SEmttSmcSwing &swing=state.swings[state.newestHighSlot];
-      if(!swing.swept && bar.high>swing.level && bar.close<=swing.level)
+      if(!state.swings[state.newestHighSlot].swept && bar.high>state.swings[state.newestHighSlot].level && bar.close<=state.swings[state.newestHighSlot].level)
         {
-         swing.swept=true;
-         EmttSmcSetSweep(state,EMTT_SMC_SWEEP_BUY,swing.level,bar,
+         state.swings[state.newestHighSlot].swept=true;
+         EmttSmcSetSweep(state,EMTT_SMC_SWEEP_BUY,state.swings[state.newestHighSlot].level,bar,
                          barSequence,symbol,writeJournal);
          return true;
         }
      }
    if(state.newestLowSlot>=0)
      {
-      SEmttSmcSwing &swing=state.swings[state.newestLowSlot];
-      if(!swing.swept && bar.low<swing.level && bar.close>=swing.level)
+      if(!state.swings[state.newestLowSlot].swept && bar.low<state.swings[state.newestLowSlot].level && bar.close>=state.swings[state.newestLowSlot].level)
         {
-         swing.swept=true;
-         EmttSmcSetSweep(state,EMTT_SMC_SWEEP_SELL,swing.level,bar,
+         state.swings[state.newestLowSlot].swept=true;
+         EmttSmcSetSweep(state,EMTT_SMC_SWEEP_SELL,state.swings[state.newestLowSlot].level,bar,
                          barSequence,symbol,writeJournal);
          return true;
         }
      }
    for(int i=0;i<state.poolRecordCount;i++)
      {
-      SEmttSmcPool &pool=state.pools[i];
-      if(pool.swept) continue;
-      if(pool.high && bar.high>pool.level && bar.close<=pool.level)
+      if(state.pools[i].swept) continue;
+      if(state.pools[i].high && bar.high>state.pools[i].level && bar.close<=state.pools[i].level)
         {
-         pool.swept=true;
-         EmttSmcSetSweep(state,EMTT_SMC_SWEEP_BUY,pool.level,bar,
+         state.pools[i].swept=true;
+         EmttSmcSetSweep(state,EMTT_SMC_SWEEP_BUY,state.pools[i].level,bar,
                          barSequence,symbol,writeJournal);
          return true;
         }
-      if(!pool.high && bar.low<pool.level && bar.close>=pool.level)
+      if(!state.pools[i].high && bar.low<state.pools[i].level && bar.close>=state.pools[i].level)
         {
-         pool.swept=true;
-         EmttSmcSetSweep(state,EMTT_SMC_SWEEP_SELL,pool.level,bar,
+         state.pools[i].swept=true;
+         EmttSmcSetSweep(state,EMTT_SMC_SWEEP_SELL,state.pools[i].level,bar,
                          barSequence,symbol,writeJournal);
          return true;
         }
@@ -1194,31 +1191,30 @@ void EmttSmcUpdateBlocks(SEmttSmcState &state,const MqlRates &bar,
   {
    for(int i=0;i<EMTT_SMC_MAX_BLOCK_RECORDS;i++)
      {
-      SEmttSmcOrderBlock &block=state.blocks[i];
-      if(!block.recorded || !block.active)
+      if(!state.blocks[i].recorded || !state.blocks[i].active)
          continue;
       // Invalidation wins when a bar both touches and closes through a far
       // edge. The invalidated level leaves the offered set at once.
-      const bool invalid=(block.bullish ? bar.close<block.zoneLow :
-                                           bar.close>block.zoneHigh);
+      const bool invalid=(state.blocks[i].bullish ? bar.close<state.blocks[i].zoneLow :
+                                           bar.close>state.blocks[i].zoneHigh);
       if(invalid)
         {
-         block.active=false;
-         block.invalidated=true;
+         state.blocks[i].active=false;
+         state.blocks[i].invalidated=true;
          if(writeJournal)
             PrintFormat("Emtt | Order block %s invalidated | close %s through %s | bar %s",
-                        (block.bullish ? "bullish" : "bearish"),
+                        (state.blocks[i].bullish ? "bullish" : "bearish"),
                         EmttSmcPriceText(symbol,bar.close),
-                        EmttSmcPriceText(symbol,(block.bullish ? block.zoneLow :
-                                                                  block.zoneHigh)),
+                        EmttSmcPriceText(symbol,(state.blocks[i].bullish ? state.blocks[i].zoneLow :
+                                                                  state.blocks[i].zoneHigh)),
                         TimeToString(bar.time,TIME_DATE|TIME_MINUTES));
          continue;
         }
-      if(bar.low<=block.zoneHigh && bar.high>=block.zoneLow)
+      if(bar.low<=state.blocks[i].zoneHigh && bar.high>=state.blocks[i].zoneLow)
         {
-         block.active=false;
-         block.mitigated=true;
-         block.mitigationTime=bar.time;
+         state.blocks[i].active=false;
+         state.blocks[i].mitigated=true;
+         state.blocks[i].mitigationTime=bar.time;
          state.mitigatedBlockCount++;
         }
      }
@@ -1260,7 +1256,7 @@ void EmttSmcDiscoverBlocks(SEmttSmcState &state,const MqlRates &rates[],
       const bool bullish=(type==1);
       for(int candidate=index+1;candidate<=last;candidate++)
         {
-         const MqlRates &origin=rates[candidate];
+         const MqlRates origin=rates[candidate];
          if((bullish && origin.close>=origin.open) ||
             (!bullish && origin.close<=origin.open))
             continue;
@@ -1285,24 +1281,23 @@ void EmttSmcDiscoverBlocks(SEmttSmcState &state,const MqlRates &rates[],
          if(!found) continue;
 
          const int slot=EmttSmcBlockSlot(state,bullish);
-         SEmttSmcOrderBlock &block=state.blocks[slot];
-         block.recorded=true;
-         block.active=true;
-         block.bullish=bullish;
-         block.mitigated=false;
-         block.invalidated=false;
-         block.zoneLow=origin.low;
-         block.zoneHigh=origin.high;
-         block.displacementRatio=ratio;
-         block.originTime=origin.time;
-         block.originSequence=barSequence-(candidate-index);
-         block.createdSequence=barSequence;
-         block.mitigationTime=0;
+         state.blocks[slot].recorded=true;
+         state.blocks[slot].active=true;
+         state.blocks[slot].bullish=bullish;
+         state.blocks[slot].mitigated=false;
+         state.blocks[slot].invalidated=false;
+         state.blocks[slot].zoneLow=origin.low;
+         state.blocks[slot].zoneHigh=origin.high;
+         state.blocks[slot].displacementRatio=ratio;
+         state.blocks[slot].originTime=origin.time;
+         state.blocks[slot].originSequence=barSequence-(candidate-index);
+         state.blocks[slot].createdSequence=barSequence;
+         state.blocks[slot].mitigationTime=0;
          if(writeJournal)
             PrintFormat("Emtt | Order block %s %s-%s | displacement %.1fx average body | bar %s",
                         (bullish ? "bullish" : "bearish"),
-                        EmttSmcPriceText(symbol,block.zoneLow),
-                        EmttSmcPriceText(symbol,block.zoneHigh),ratio,
+                        EmttSmcPriceText(symbol,state.blocks[slot].zoneLow),
+                        EmttSmcPriceText(symbol,state.blocks[slot].zoneHigh),ratio,
                         TimeToString(rates[index].time,TIME_DATE|TIME_MINUTES));
         }
      }
@@ -1323,7 +1318,7 @@ void EmttSmcSelectOrderBlock(SEmttSmcState &state,const double close)
    int selected=-1;
    for(int i=0;i<EMTT_SMC_MAX_BLOCK_RECORDS;i++)
      {
-      const SEmttSmcOrderBlock &block=state.blocks[i];
+      const SEmttSmcOrderBlock block=state.blocks[i];
       if(!block.recorded || !block.active ||
          (state.bias>0 && !block.bullish) ||
          (state.bias<0 && block.bullish))
@@ -1341,7 +1336,7 @@ void EmttSmcSelectOrderBlock(SEmttSmcState &state,const double close)
      }
    if(selected<0) return;
 
-   const SEmttSmcOrderBlock &block=state.blocks[selected];
+   const SEmttSmcOrderBlock block=state.blocks[selected];
    state.hasOrderBlock=true;
    state.orderBlockBullish=block.bullish;
    state.orderBlockLow=block.zoneLow;
@@ -1404,29 +1399,28 @@ void EmttSmcUpdateGaps(SEmttSmcState &state,const MqlRates &bar,
   {
    for(int i=0;i<EMTT_SMC_MAX_GAP_RECORDS;i++)
      {
-      SEmttSmcGap &gap=state.gaps[i];
-      if(!gap.recorded || !gap.active)
+      if(!state.gaps[i].recorded || !state.gaps[i].active)
          continue;
-      const bool filled=(gap.bullish ? bar.close<gap.zoneLow :
-                                        bar.close>gap.zoneHigh);
+      const bool filled=(state.gaps[i].bullish ? bar.close<state.gaps[i].zoneLow :
+                                        bar.close>state.gaps[i].zoneHigh);
       if(filled)
         {
-         gap.active=false;
-         gap.filled=true;
+         state.gaps[i].active=false;
+         state.gaps[i].filled=true;
          if(writeJournal)
             PrintFormat("Emtt | Fair value gap %s filled | close %s through %s | bar %s",
-                        (gap.bullish ? "bullish" : "bearish"),
+                        (state.gaps[i].bullish ? "bullish" : "bearish"),
                         EmttSmcPriceText(symbol,bar.close),
-                        EmttSmcPriceText(symbol,(gap.bullish ? gap.zoneLow :
-                                                               gap.zoneHigh)),
+                        EmttSmcPriceText(symbol,(state.gaps[i].bullish ? state.gaps[i].zoneLow :
+                                                               state.gaps[i].zoneHigh)),
                         TimeToString(bar.time,TIME_DATE|TIME_MINUTES));
          continue;
         }
-      if(bar.low<=gap.zoneHigh && bar.high>=gap.zoneLow)
+      if(bar.low<=state.gaps[i].zoneHigh && bar.high>=state.gaps[i].zoneLow)
         {
-         gap.active=false;
-         gap.mitigated=true;
-         gap.mitigationTime=bar.time;
+         state.gaps[i].active=false;
+         state.gaps[i].mitigated=true;
+         state.gaps[i].mitigationTime=bar.time;
         }
      }
   }
@@ -1437,8 +1431,8 @@ void EmttSmcDiscoverGap(SEmttSmcState &state,const MqlRates &rates[],
   {
    if(index<0 || index+2>=ArraySize(rates))
       return;
-   const MqlRates &a=rates[index+2];
-   const MqlRates &c=rates[index];
+   const MqlRates a=rates[index+2];
+   const MqlRates c=rates[index];
    bool bullish=false;
    double low=0.0,high=0.0;
    if(c.low>a.high)
@@ -1459,18 +1453,17 @@ void EmttSmcDiscoverGap(SEmttSmcState &state,const MqlRates &rates[],
       return;
 
    const int slot=EmttSmcGapSlot(state);
-   SEmttSmcGap &gap=state.gaps[slot];
-   gap.recorded=true;
-   gap.active=true;
-   gap.bullish=bullish;
-   gap.mitigated=false;
-   gap.filled=false;
-   gap.zoneLow=low;
-   gap.zoneHigh=high;
-   gap.originTime=c.time;
-   gap.originSequence=barSequence;
-   gap.createdSequence=barSequence;
-   gap.mitigationTime=0;
+   state.gaps[slot].recorded=true;
+   state.gaps[slot].active=true;
+   state.gaps[slot].bullish=bullish;
+   state.gaps[slot].mitigated=false;
+   state.gaps[slot].filled=false;
+   state.gaps[slot].zoneLow=low;
+   state.gaps[slot].zoneHigh=high;
+   state.gaps[slot].originTime=c.time;
+   state.gaps[slot].originSequence=barSequence;
+   state.gaps[slot].createdSequence=barSequence;
+   state.gaps[slot].mitigationTime=0;
    if(writeJournal)
       PrintFormat("Emtt | Fair value gap %s %s-%s | bar %s",
                   (bullish ? "bullish" : "bearish"),
@@ -1500,7 +1493,7 @@ void EmttSmcSelectGaps(SEmttSmcState &state,const double close)
    int above=-1,below=-1;
    for(int i=0;i<EMTT_SMC_MAX_GAP_RECORDS;i++)
      {
-      const SEmttSmcGap &gap=state.gaps[i];
+      const SEmttSmcGap gap=state.gaps[i];
       if(!gap.recorded || !gap.active)
          continue;
       state.activeGapCount++;
@@ -1525,7 +1518,7 @@ void EmttSmcSelectGaps(SEmttSmcState &state,const double close)
      }
    if(above>=0)
      {
-      const SEmttSmcGap &gap=state.gaps[above];
+      const SEmttSmcGap gap=state.gaps[above];
       state.hasGapAbove=true;
       state.gapAboveBullish=gap.bullish;
       state.gapAboveLow=gap.zoneLow;
@@ -1539,7 +1532,7 @@ void EmttSmcSelectGaps(SEmttSmcState &state,const double close)
      }
    if(below>=0)
      {
-      const SEmttSmcGap &gap=state.gaps[below];
+      const SEmttSmcGap gap=state.gaps[below];
       state.hasGapBelow=true;
       state.gapBelowBullish=gap.bullish;
       state.gapBelowLow=gap.zoneLow;
@@ -1566,7 +1559,7 @@ void EmttSmcSetEvent(SEmttSmcState &state,const EEmttSmcEvent eventKind,
                      const string symbol,const bool writeJournal)
   {
    const int previousBias=state.bias;
-   const SEmttSmcSwing &swing=state.swings[swingSlot];
+   const SEmttSmcSwing swing=state.swings[swingSlot];
    state.eventKind=eventKind;
    state.eventDirection=direction;
    state.eventTime=bar.time;
@@ -1737,7 +1730,7 @@ bool EmttSmcAdvanceFixed(SEmttSmcState &state,const MqlRates &rates[],
    state.atrPeriod=atrPeriod;
    state.atrValue=atr[index];
    state.currentSequence=barSequence;
-   const MqlRates &bar=rates[index];
+   const MqlRates bar=rates[index];
 
    EmttSmcExpireSwings(state,barSequence);
    EmttSmcRefreshSwingFacts(state,barSequence);
