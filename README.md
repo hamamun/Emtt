@@ -58,6 +58,17 @@ score and the trailing reference are never displayed, and the EA still draws not
 State is rebuilt by replaying closed bars, so a restart, a timeframe round-trip or a chart replay
 reproduces the same clusters, multiplier, direction, line and score.
 
+## Phase 4 — Market structure detection (implemented)
+
+`Emtt_SMC.mqh` derives confirmed closed-bar swings, BOS / CHoCH, wick-only liquidity sweeps and equal-level pools,
+Order Blocks, Fair Value Gaps, and Premium / Discount / Equilibrium from the selected matrix ATR. Its class, volatility
+and timeframe-aware structure window, pivot strength, body period and derived OB lookback obey the existing two-bar
+parameter pause and replay silently whenever they change. The component publishes bounded, deterministic facts and an
+internal `smcScore`; it never draws on the chart or places a trade. Row 9 adds at most three compact structure facts
+(zone, event and one priority level), while Row 10 gives fresh CHoCH, BOS and sweep updates precedence over the existing
+Supertrend/regime status. All state is rebuilt from closed bars on initialization, reset, history recovery and context
+changes, so chart replay and a restart reproduce the same structure context.
+
 Run the portable checks with:
 
 ```sh
