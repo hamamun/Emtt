@@ -384,3 +384,218 @@ session trading block, trade management, self-learning and parameter-optimizatio
 - On H1 and other timeframes the Regime / Session / WHY fields show `--` with the red message; Price Row still live.
 - No repainting: restarting the EA or replaying the chart shows the same readings.
 - All objects are still removed cleanly when the EA is removed from the chart.
+
+---
+
+## 11. Phase 3 — ML-Adaptive Supertrend (K-Means)
+
+**Status: SPEC APPROVED (2026-10-08) — implementation pending.** Build starts only after the author signs off the
+Phase 2 chart verification in section 10.
+
+Emtt works out **how** it should read direction: it clusters the symbol's recent volatility, keeps one Supertrend
+setting per cluster, and reports the resulting direction as context. Direction is context, not a signal — no BUY/SELL,
+no levels, no orders.
+
+### 11.1 Files
+
+| File | Change |
+|---|---|
+| `Include/Emtt/Emtt_Supertrend.mqh` | new — Supertrend bands, K-Means clusters, per-cluster multiplier |
+| `Experts/Emtt.mq5` | wired into the existing closed-bar path and `FillPanel()`; `#property version` → `1.20`, one `#property description` line updated |
+| `tests/phase3_reference.py` + `tests/test_phase3_reference.py` | new — MT5-free mirror of 11.3–11.6, same pattern as Phase 2; scope in 11.12 |
+| `tools/mql5_compile_smoke.py` | contract list gains the new header; the "dashboard unchanged" guard stays |
+| `README.md` | one Phase 3 paragraph |
+
+`Include/Emtt/Emtt_Dashboard.mqh` is **not touched**. Sections 1–10 of this file are **not rewritten**.
+Inputs stay **Magic number + Auto Trading** — Phase 3 adds none. No new indicator handle: Supertrend is computed from
+the ATR buffers the EA already copies. The panel header string stays `Emtt V1.0` — only the `#property` lines change.
+
+### 11.2 Rules for this phase
+
+1. **Panel only.** Emtt draws no other chart object in this phase — no line, rectangle, arrow or chart label. Its only
+   chart objects are the panel objects. This holds for later phases unless the author writes such a rule.
+2. **No layout change** — rules 11–17 stand: no new rows, fixed width, `Segoe UI`, sizes, palette, colours all as is.
+   WHY keeps its default 2 lines and may wrap.
+3. **Rows 2–7 stay label-only.** The LIVE TRADE block keeps its Phase 2 behaviour (detected by magic number, rows 11–14
+   label-only). Nothing about orders changes.
+4. **Closed bars only**, index 0 never read; the per-tick path stays `UpdatePanel()` only — no measurement on ticks.
+5. **Nothing invented** — a field carries a measured value or `--`, as rule 19 and 9.2.8 already require.
+6. Supertrend belongs to the **Measurement** class of 9.2.3: adjusted by class + timeframe + volatility, **never by the
+   regime**, and it feeds nothing back into the bucket or the regime.
+
+### 11.3 Supertrend — exact definition
+
+ATR used: the matrix `atrPeriod` currently resolved (class + bucket). The fixed ATR(14) measuring stick of 9.2.2 is
+**not** used here. Computed in-house from `MqlRates` + ATR — no custom indicator, no `.ex5`, no DLL, no Market download.
+
+Per closed bar `i` (series indexing, `i+1` = the older bar), for multiplier `m`:
+
+- `mid = (high[i] + low[i]) / 2`
+- `upRaw = mid + m × ATR[i]`, `dnRaw = mid − m × ATR[i]`
+- `up[i] = (upRaw < up[i+1] || close[i+1] > up[i+1]) ? upRaw : up[i+1]`
+- `dn[i] = (dnRaw > dn[i+1] || close[i+1] < dn[i+1]) ? dnRaw : dn[i+1]`
+- direction: `+1` when `close[i] > up[i+1]`; `−1` when `close[i] < dn[i+1]`; otherwise carry `direction[i+1]`
+- line: `dn[i]` when direction is `+1`, `up[i]` when `−1` — published as the trailing reference for the later
+  management phase, **displayed nowhere** in this phase (rule 11)
+- the oldest bar of the window seeds direction `+1`; `flat` is reported only if no band has been evaluated yet
+
+### 11.4 K-Means — exact definition
+
+- **Input:** the raw ATR values (`atrPeriod`) of the training window's closed bars. No normalisation, no smoothing.
+- **K = 3.** Seeds = the 10th / 50th / 90th percentile of that window. Standard Lloyd iterations, **max 20**, stop when
+  no centre moves more than `1e-9 × window mean`. Centres sorted ascending → **Calm / Normal / Wild**.
+- **Current cluster** = the centre nearest the newest closed bar's ATR; an exact tie resolves to the **calmer** centre.
+- **Sparse guard:** a cluster holding fewer than 5 members never owns a learned multiplier — the nearest populated
+  cluster's multiplier is used instead and the reason is journaled.
+- **Retrain cadence:** every `max(1, window / 20)` closed bars (≈ 10 on M5, 12 on M15, 15 on M30), and immediately when
+  the asset class, the resolved `atrPeriod`, the window length, or the volatility bucket changes; also on the first
+  evaluation after init, a timeframe switch, market reopen, or a history shortfall reset.
+
+### 11.5 Multiplier selection — exact definition
+
+- **Candidates:** `2.0 / 2.5 / 3.0 / 3.5 / 4.0` ATR multiples. The candidate set **is** the range — identical for every
+  asset class, and no value outside it can ever be selected.
+- For each candidate, replay 11.3 across the training window and take the maximal runs of equal direction as segments:
+  - `segReturn = direction × (closeEnd − closeStart) / ATR at segment start`
+  - `meanReturn` = mean over segments at least 1 closed bar long
+  - `noise = segmentCount / (windowBars / 10)`
+  - `score = meanReturn − 0.10 × noise` (a small, fixed whipsaw penalty)
+- Winner = highest `score`; a tie goes to the **larger** (smoother) multiplier. One winner is stored per cluster; the
+  live value is the winner belonging to the current cluster.
+- Selection reads closed bars inside the window only — never the bar after the window, never index 0.
+- **Guard rails of 9.2.3 apply to this value:** one change, then the same parameter stays put for 2 closed bars, every
+  change journaled, never outside the candidate set. The pause governs the **multiplier only** — direction and current
+  cluster are readings and are never delayed or damped by it.
+
+### 11.6 What Phase 3 publishes — the component contract
+
+This is the shape every later component phase copies. The EA keeps one state struct; nothing in it is displayed beyond
+what 11.8 allows.
+
+- `direction` (+1 / −1 / 0), `line` (the trailing reference, in price), `cluster` (Calm / Normal / Wild), `multiplier`.
+- **Facts, not only a label:** `barsSinceFlip`, `flipCount` in the window, `distanceATRs`
+  (`(close − line) / ATR × direction`, so it is positive while price sits on the trade side of the line and clamps to 0
+  when it has fallen back through it), and the `atrPeriod` / `atrValue` the reading was made on.
+- **`supertrendScore`, a single 0.0–1.0 number**, computed from those closed-bar facts only:
+
+  `score = 0.45 × clamp01(distanceATRs) + 0.35 × clamp01(barsSinceFlip / 20) + 0.20 × clamp01(1 − flipCount / 20)`
+
+  with `clamp01(x) = max(0, min(1, x))`, and `score = 0` when `direction` is 0 (`flat`).
+- **Why the score exists now:** Row 3 (rule 6) is one combined figure, and the phase that fills it sums one such score
+  per component. Deriving it later inside a finished module means rewriting and re-verifying this one; deriving it here
+  costs nothing and changes nothing the user sees.
+- **What the score is not:** it gates nothing in this phase, places nothing, and is never shown. It may never adjust a
+  parameter, a bucket or a regime — readings are outputs, not inputs, to the engine of 9.2.3. `distanceATRs` and
+  `barsSinceFlip` are additionally the momentum inputs the Expected Duration row will read in its own phase.
+- Later phases publish the same contract — score + facts + the levels they find — so the confidence phase only ever
+  sums weights. It defines no weights and no combining rule here.
+
+### 11.7 Rows Phase 3 adds to the parameter table of 9.2.3
+
+| Parameter | Base | Class | Layer 2 (timeframe) | Layer 3 (bucket) | Layer 4 (regime) |
+|---|---|---|---|---|---|
+| K-Means training window (lookback, closed bars) | 200 | **lookback** | ×1.0 / ×1.25 / ×1.5 → 200 / 250 / 300, rounded to whole bars | not adjusted | not adjusted |
+| Supertrend ATR multiple | learned | measurement | not scaled (not a bar count) | through the `atrPeriod` it is measured on | never |
+
+This is the first **lookback** parameter, so the Layer 2 scaling written in 9.2.3 and deferred by section 10 starts
+working here. The **200-bar volatility window stays fixed and unscaled** (9.2.3): on M30 the percentile ranking still
+uses 200 bars while K-Means uses 300. Management rows still arrive with their own phases.
+
+### 11.8 Panel wiring
+
+- **Row 9 (WHY):** the Phase 2 regime sentence first, then ` | `, then `<Cluster> (Supertrend <direction>)` — cluster is
+  `Calm` / `Normal` / `Wild`, direction is `bullish` / `bearish` / `flat`.
+  e.g. `Efficiency 71/100 and KAMAs aligned up; volatility normal | Wild (Supertrend bullish)`.
+  The clause is appended whenever the Supertrend measurement is ready, including while a regime label is still in its
+  confirmation bars. Not ready, market closed, or incompatible chart → no clause, `--` as today.
+- **Regime and Supertrend are never reconciled.** If they disagree, both read as measured; no wording, colour or
+  suppression may be used to make them look consistent.
+- **Row 10 (STATUS):** precedence stays rule 19 > loading history > `MARKET CLOSED`, then: with a Supertrend direction
+  available → `Watching — Supertrend context only, no signal yet`; otherwise the Phase 2 regime/pending lines stay
+  exactly as they are. Section 7's `No trade — …` messages still belong to the phase that can place orders.
+- **Rows 1–8 and 11–14 unchanged.** `Expected Duration:` still empty. The score, the line and the facts are never
+  displayed: rule 11 gives them no row.
+- **Required history — one gate for all measurements.** The figure becomes timeframe-derived: training window + the
+  50-bar ATR baseline → **250 / 300 / 350** closed bars for M5 / M15 / M30, resolved by the same code path (never
+  hardcoded per timeframe). `EMTT_HISTORY_REQUIRED` no longer drives the gate; `g_historyRequired` carries the resolved
+  value, and the loading line shows `Waiting — Loading chart history (N/M candles)` with that M. This supersedes
+  "about 200" in 9.2.8. While the gate is open, Row 1, Row 9 and Row 10 behave exactly as in Phase 2 — no partial,
+  half-measured display.
+
+### 11.9 Determinism, replay, state
+
+- No RNG, no clock, no tick data, no file access in any Phase 3 calculation. Same closed bars in → same clusters, same
+  multiplier, same direction, same line, same score, on any machine and at any time.
+- All Phase 3 state is **reconstructed by replaying closed bars** on init, on a timeframe or symbol change, on market
+  reopen and after any history shortfall reset — using the same replay path Phase 2 already uses. State never carries
+  over from a previous session: no new file, no new GlobalVariable (the Phase 2 threshold-freeze key stays as it is).
+- The replay **must** retrain on the 11.4 cadence as it walks the bars; that is what makes a restart reproduce the same
+  multiplier through the 2-bar pause. Skipping the replay to save time is not allowed. The cost is bounded and small:
+  at most `350 × 35 retrains × 5 candidates` band evaluations once, on the timer — nothing may run per tick, where only
+  `UpdatePanel()` belongs.
+- Journal through the existing `PrintFormat` channel, on the closed bar, with its reason, same shape as Phase 2:
+  `Supertrend multiplier 3.0 -> 2.5 | cluster Normal -> Wild | bar 2026.10.08 14:30`. Logged on a multiplier change, a
+  current-cluster change or a direction flip, and on the sparse-cluster fallback — never when nothing changed. The panel
+  gets no parameter row (rule 11); the journal is the only record. Readings (direction, cluster, score) are never
+  journaled as changes — they are re-readable from the chart.
+
+### 11.10 Freeze semantics — unchanged
+
+The frozen set stays exactly as 9.2.3 wrote it (SL / TP multiples, breakeven, trailing, duration, confidence threshold).
+Phase 3 adds **nothing** to it and freezes **nothing** new: while an Emtt position is open, the clusters, the multiplier,
+the direction and the score keep measuring and keep journaling live, and the panel never freezes.
+
+### 11.11 Design seam for the later Multi-Timeframe phase
+
+`Emtt_Supertrend.mqh` exposes a state struct plus functions that take the symbol, timeframe and closed-bar data as
+arguments; the header reads no chart, no panel and no EA global. The EA owns one instance for the chart timeframe.
+- The MTF phase must be able to instantiate a second instance for the higher timeframe with **no change to this header**.
+- **Phase 3 introduces no new single-timeframe global in `Experts/Emtt.mq5`.** The higher-timeframe check needs the
+  regime and the parameter resolution as well as Supertrend, so the two Phase 2 headers keep taking their state as
+  arguments and are never given their own globals here.
+- Carried forward, **not built now:** the MTF phase owns the change that wraps the Phase 2 and Phase 3 state into one
+  context per symbol + timeframe. Writing that constraint now stops it from arriving as a rewrite of an approved phase.
+
+### 11.12 Tests
+
+`tests/phase3_reference.py` mirrors 11.3–11.6 in the same style as Phase 2, with `tests/test_phase3_reference.py`
+asserting, without MT5: band and direction rules on a fixed series; seed quantiles, ascending clusters, tie → calmer,
+sparse fallback; scoring, tie → larger multiplier, never outside the candidate set; the 2-closed-bar pause on the
+multiplier and its absence on readings; the TF-scaled windows 200 / 250 / 300 and the history gate 250 / 300 / 350;
+score formula bounds and the `flat → 0` rule; the Row 9 and Row 10 strings.
+Same file also models the 9.2.3 matrix resolution, its clamping and the pause rule — implemented in Phase 2 but never
+covered by the portable suite.
+
+### 11.13 Not in this phase
+
+No confidence engine, no weights, no Row 2 / Row 3 values, no Entry / SL / TP, no Risk:Reward, no Expected Duration, no
+order placement or management, no SMC, no Volume Profile / CVD / VWAP, no multi-timeframe agreement, no news or session
+blocking, no chart overlays, no self-learning or parameter-optimization persistence, no new inputs, no new panel row.
+
+---
+
+## 12. Phase 3 — Done When
+
+- Supertrend, clusters, multiplier, direction and score are computed from closed bars only; index 0 is never read, and
+  nothing runs on ticks.
+- The same closed bars always give the same answer: restart, timeframe round-trip and chart replay reproduce identical
+  clusters, multiplier, direction, line and score.
+- The winner changes only inside `2.0 … 4.0`, at most once and then not again for 2 closed bars, and every change is in
+  the journal with its reason.
+- A value resting on a cluster boundary cannot make the multiplier or the panel clause flicker; direction, cluster word
+  and score still update live while a trade is open.
+- Layer 2 of 9.2.3 visibly works for the first time: on the same symbol, M5 / M15 / M30 train on 200 / 250 / 300 bars
+  through one code path, and the journal records the window in use.
+- Row 9 reads `<regime sentence> | <Cluster> (Supertrend <direction>)` and wraps within the existing fixed width; no new
+  row, no colour, no size, no font change; Rows 2–7 and 11–14 stay label-only; the score and the trailing reference
+  appear nowhere on the panel.
+- The published state carries `direction / line / cluster / multiplier / score` plus `barsSinceFlip`, `flipCount` and
+  `distanceATRs`, and `Emtt_Supertrend.mqh` compiles with no reference to the chart, the panel or an EA global.
+- Regime and Supertrend may disagree on chart and both show what they measured.
+- With less history than the gate needs, the panel still shows `--` with `Waiting — Loading chart history (N/M candles)`
+  and the real M for the timeframe; the Price Row stays live and exact. Initialisation with the full replay stays
+  visibly instant, with no stutter on ticks.
+- On H1 and other charts rule 19 still wins: `--` fields, red incompatible-timeframe STATUS, nothing measured or shown.
+- The EA draws nothing but the panel, and all panel objects are still removed cleanly on removal.
+- `python -m unittest discover -s tests -v` and `python tools/mql5_compile_smoke.py` pass, with the Phase 3 header in
+  the CI contract, the dashboard guard still enforced, and the Phase 2 matrix / clamp / pause now covered.
