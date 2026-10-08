@@ -152,6 +152,8 @@ def check_contract(paths: list[Path]) -> None:
         "Include/Emtt/Emtt_Regime.mqh",
         "Include/Emtt/Emtt_Supertrend.mqh",
         "Include/Emtt/Emtt_SMC.mqh",
+        "Include/Emtt/Emtt_VolumeFlow.mqh",
+        "Include/Emtt/Emtt_MTF.mqh",
     }
     missing = required - relative
     if missing:
@@ -264,6 +266,64 @@ def check_contract(paths: list[Path]) -> None:
     for pattern in forbidden_smc:
         if re.search(pattern, smc):
             raise RuntimeError(f"Phase-4 SMC source contains forbidden chart drawing token: {pattern}")
+
+    phase5_volume_flow = (ROOT / "Include" / "Emtt" / "Emtt_VolumeFlow.mqh").read_text()
+    phase5_mtf = (ROOT / "Include" / "Emtt" / "Emtt_MTF.mqh").read_text()
+    phase5_markers = (
+        (phase5_volume_flow, r"EMTT_VF_BINS\s+40", "40 profile bins"),
+        (phase5_volume_flow, r"EMTT_VF_VALUE_AREA\s+0\.70", "70 percent value area"),
+        (phase5_volume_flow, r"EMTT_VF_CVD_WINDOW\s+10", "10-bar CVD comparison window"),
+        (phase5_volume_flow, r"EMTT_VF_CVD_FLIP\s+0\.25", "CVD flip band of 0.25 window volume"),
+        (phase5_volume_flow, r"EMTT_VF_CONTROL_SCALE\s+0\.5", "control scale of half the window volume"),
+        (phase5_volume_flow, r"EMTT_VF_MAGNET_ATRS\s+3\.0", "three-ATR magnet proximity scale"),
+        (phase5_volume_flow, r"EMTT_VF_WEIGHT_CONTROL\s+0\.35", "control score weight"),
+        (phase5_volume_flow, r"EMTT_VF_WEIGHT_FAIR\s+0\.25", "fair-price score weight"),
+        (phase5_volume_flow, r"EMTT_VF_WEIGHT_VALUE\s+0\.20", "value-area score weight"),
+        (phase5_volume_flow, r"EMTT_VF_WEIGHT_MAGNET\s+0\.20", "magnet score weight"),
+        (phase5_volume_flow, r"EMTT_VF_WINDOW_MIN\s+50", "profile window floor"),
+        (phase5_volume_flow, r"EMTT_VF_WINDOW_MAX\s+400", "profile window ceiling"),
+        (phase5_volume_flow, r"EMTT_VF_SESSION_DEPTH\s+160", "160-bar session depth"),
+        (phase5_volume_flow, r"EMTT_VF_STATUS_FRESH_BARS\s+3", "three-bar flow status freshness"),
+        (phase5_mtf, r"EMTT_MTF_WEIGHT_DIRECTION\s+0\.50", "direction agreement weight"),
+        (phase5_mtf, r"EMTT_MTF_WEIGHT_REGIME\s+0\.30", "HTF regime weight"),
+        (phase5_mtf, r"EMTT_MTF_WEIGHT_STRUCTURE\s+0\.20", "HTF structure weight"),
+        (phase5_mtf, r"EMTT_MTF_FETCH_BUFFER\s+10", "ten-bar HTF fetch buffer"),
+        (phase5_mtf, r"EMTT_MTF_STATUS_FRESH_BARS\s+3", "three-bar HTF status freshness"),
+        (ea, r'#include "\.\./Include/Emtt/Emtt_VolumeFlow\.mqh"', "quoted repo-relative Phase-5 volume-flow include"),
+        (ea, r'#include "\.\./Include/Emtt/Emtt_MTF\.mqh"', "quoted repo-relative Phase-5 MTF include"),
+        (ea, r"SEmttVolumeFlowState\s+g_volumeFlow;", "exactly one volume-flow state instance"),
+        (ea, r"SEmttMtfState\s+g_mtf;", "exactly one MTF state instance"),
+        (ea, r"SEmttMtfContext\s+g_mtfContext;", "exactly one MTF context instance"),
+        (ea, r"EmttVolumeFlowAdvance\(", "volume flow advanced on the closed-bar path"),
+        (ea, r"EmttMtfAdvance\(", "HTF context polled on the closed-bar and timer paths"),
+        (ea, r"EmttWhyWithVolumeFlow\(", "Row 9 volume-flow clause wired into FillPanel"),
+        (ea, r"EmttWhyWithMtf\(", "Row 9 MTF clause wired into FillPanel"),
+        (ea, r"EmttVfHistoryRequired\(", "combined volume-flow history gate"),
+    )
+    for source, pattern, description in phase5_markers:
+        if not re.search(pattern, source):
+            raise RuntimeError(f"missing Phase-5 rule: {description}")
+    if len(re.findall(r"\bSEmttVolumeFlowState\s+g_volumeFlow\s*;", ea)) != 1:
+        raise RuntimeError("Phase 5 must declare exactly one EA volume-flow state instance")
+    if len(re.findall(r"\bSEmttMtfState\s+g_mtf\s*;", ea)) != 1:
+        raise RuntimeError("Phase 5 must declare exactly one EA MTF state instance")
+    if len(re.findall(r"\bSEmttMtfContext\s+g_mtfContext\s*;", ea)) != 1:
+        raise RuntimeError("Phase 5 must declare exactly one EA MTF context instance")
+    if ea.find("Emtt_SMC.mqh") > ea.find("Emtt_VolumeFlow.mqh"):
+        raise RuntimeError("Phase-5 volume-flow include must follow Emtt_SMC.mqh")
+    if ea.find("Emtt_VolumeFlow.mqh") > ea.find("Emtt_MTF.mqh"):
+        raise RuntimeError("Phase-5 MTF include must follow Emtt_VolumeFlow.mqh")
+
+    # Rule 15.2 stands on 13.2 rule 1: neither new header may create a chart
+    # artifact. The Phase-4 forbidden-token list is applied to both.
+    for source, name in ((phase5_volume_flow, "volume-flow"), (phase5_mtf, "MTF")):
+        for pattern in forbidden_smc:
+            if re.search(pattern, source):
+                raise RuntimeError(
+                    f"Phase-5 {name} source contains forbidden chart drawing token: {pattern}"
+                )
+
+
 
 
 def run_metaeditor(paths: list[Path]) -> None:

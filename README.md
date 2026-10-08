@@ -69,6 +69,20 @@ internal `smcScore`; it never draws on the chart or places a trade. Row 9 adds a
 Supertrend/regime status. All state is rebuilt from closed bars on initialization, reset, history recovery and context
 changes, so chart replay and a restart reproduce the same structure context.
 
+## Phase 5 — Volume flow and higher-timeframe agreement (implemented)
+
+`Include/Emtt/Emtt_VolumeFlow.mqh` measures the closed-bar session VWAP, a 40-bin volume profile
+(POC / VAH / VAL), the previous session's naked POC and the close-position CVD estimate, and
+publishes the weighted `volumeFlowScore`. `Include/Emtt/Emtt_MTF.mqh` re-runs the regime,
+Supertrend and structure stack on the mapped higher timeframe (M5 → M15, M15 → H1, M30 → H4) and
+publishes that HTF context plus `mtfScore`. Both components read closed bars only, keep their own
+session / HTF clocks, never draw, and journal every re-anchor, window change, CVD flip, replay
+summary and HTF rebuild / turn / regime / structure event. Row 9 gains
+` | <volume-flow clause> | <MTF clause>`, Row 10 gains the CVD and MTF flip precedence with the
+combined `Watching — context only, no signal yet` line, and the profile window is a dynamic
+lookback, so the single history gate is now `max(Supertrend, structure, volume flow)` —
+302 / 377 / 402 candles in the worst case.
+
 Run the portable checks with:
 
 ```sh
