@@ -2010,3 +2010,257 @@ sha256 and node counts recorded here as they were in sections 8, 10, 12 and 14.
 - `python -m unittest discover -s tests -v` and `python tools/mql5_compile_smoke.py` pass, with the two Phase 5
   headers and markers in the CI contract, the no-drawing guard extended to both, and the Phase 1 dashboard
   digest plus every Phase 2, Phase 3 and Phase 4 marker still asserted.
+
+**Decision (2026-10-09) — Indices volume window.** The author asked the builder to decide. The standard value is used, and the parameter engine moves it only when the symbol class and the market condition require it. Once it moves, it holds for 2 closed bars (the pause in 9.2 item 3). Indices keep their own row from the Layer 1 base matrix: `150 / 188 / 225` (Low), `200 / 250 / 300` (Normal) and `250 / 313 / 375` (High, M5 / M15 / M30). The reason is the 15.11 rationale: indices turn over faster, so their window is shorter than Metals'; in High volatility that is 250 against 300. The grouped `Metals, Indices` High cell (`300 / 375 / 400`) therefore applies to Metals only. This stamp governs the Indices High cell above; no existing text is changed. `Emtt_VolumeFlow.mqh` already builds these values (`EmttVfMatrixWindow`), so the decision needs no code change and no Phase 6 change.
+
+---
+
+## 17. Phase 6 — Signal and Trade Plan (no orders)
+
+**Status: SPEC APPROVED (2026-10-09) — BUILD AUTHORISED.** The author approved the design on 2026-10-09 and asked for the build to start in a new chat from this section. Nothing in this phase places an order. Emtt says what it would do, where, and why, and nothing more.
+
+This phase builds the items that 15.14 carried forward: the **confidence engine**, **Entry / SL / TP**, **Risk:Reward** and **Expected Duration**. It fills the rows that have stayed label-only since Phase 1: Rows 2–7, and `Expected Duration:` in Row 8.
+
+Decisions carried as rules of this section:
+
+1. **Gate (author).** BUY or SELL only when confidence clears the market-mood bar **and** the trade plan passes its checks. Otherwise WAIT, with the reason.
+2. **Entry (author).** Calculated by Emtt, never typed in. BUY and SELL always carry an Entry. WAIT carries none.
+3. **Stop (author's final decision).** Just beyond the nearest turning point or the order block's far edge, whichever is further from entry, plus 0.5 ATR. It must sit between 1 and 3 ATR from entry. If it would be further than 3 ATR, the idea is skipped.
+4. **Target (author).** Calculated by Emtt from real measured levels: fair value gap, volume level or liquidity pool. Never hard-coded, never fabricated. Minimum Risk:Reward is 1.5:1 in a clear trend and 2:1 in the other moods.
+5. **Timing (author).** The signal changes only when a candle closes. No waiting for two or three candles.
+6. **Builder additions, not yet confirmed by the author.** A 5-point stay margin: once BUY or SELL shows, it stays until confidence falls 5 points below its bar, with no delay. A fixed plan: entry, stop and target do not move while the signal lasts. The plan end rules of 17.7. Money amounts show `--`. The author can change any of these before the build starts.
+7. **Standing rules.** No chart drawing of any kind (13.2 rule 1). Every number is a named row of the parameter table (17.5). The phase is delivered whole, in one change set, with no sub-phases (13.1 Delivery).
+
+The numbers in 17.5 are the builder's proposal. They are the starting values for the build unless the author changes them here first.
+
+### 17.1 Files
+
+| File | Change |
+|---|---|
+| `Include/Emtt/Emtt_TradePlan.mqh` | new — Entry, Stop, Target, Risk:Reward and Expected Duration; pure functions of published readings and the ATR |
+| `Include/Emtt/Emtt_Signal.mqh` | new — four-view combination, mood bar and stay margin, signal gate, plan lifecycle and result journal lines; pure logic over the four published states |
+| `Experts/Emtt.mq5` | wired into the closed-candle path (after the four components advance) and into `FillPanel()`; `#property version` becomes `1.50`; the description gains `Phase 6: signal and trade plan (no orders).` |
+| `tests/phase6_reference.py` + `tests/test_phase6_reference.py` | new — MT5-free mirror of 17.2–17.8, same pattern as Phases 2–5; scope in 17.9 |
+| `tools/mql5_compile_smoke.py` | contract gains the two headers, the Phase 6 markers and the three guards of 17.9, applied to both new headers and the EA |
+| `README.md` | one Phase 6 paragraph |
+
+`Emtt_Dashboard.mqh`, `Emtt_DynamicParams.mqh`, `Emtt_Regime.mqh`, `Emtt_Supertrend.mqh`, `Emtt_SMC.mqh`, `Emtt_VolumeFlow.mqh` and `Emtt_MTF.mqh` are **not touched** and stay byte-identical. They are consumed, never edited. Sections 1–16 are not rewritten. Inputs stay **Magic number + Auto Trading**. No new chart-timeframe handle, data file or GlobalVariable is added.
+
+### 17.2 Rules for this phase
+
+1. **No orders in this phase.** Nothing in the EA sends, modifies, closes or deletes an order or a position. Auto Trading changes nothing but the header word (6 rule 9). The LIVE TRADE block stays hidden, because Emtt holds no position of its own (6 rule 8).
+2. **Closed candles only.** Every decision uses the newest closed candle. The forming candle is never read. Per tick, only the Price Row updates, as today. Row 4's distance and the level lines of 17.6 refresh on the one-second timer.
+3. **The signal changes only at a candle close, with no extra candles.** The two-candle confirmation of 9.2.6 belongs to the regime label that Row 1 shows, and the signal does not use it. The mood used in 17.3 is the mood measured at the newest closed candle: the Regime module's pending candidate when one is open, otherwise its confirmed label. `Emtt_Regime.mqh` is read, not edited.
+4. **A signal needs all four views ready.** No partial confidence is ever shown (15.10). Until they are ready, Row 2 shows `--`.
+5. **The plan is fixed.** When a BUY or SELL first appears, Entry, Stop, Target, Risk:Reward and Expected Duration are set. They do not move until the plan ends (17.7).
+6. **Nothing invented.** Every level comes from a published reading (13.3, 13.5, 13.6, 13.7, 15.5, 15.7) or from the ATR. A field with no measured value shows `--` (9.2.8).
+7. **Components are not reconciled** (11.8, 13.2 rule 7). The one confidence figure is the combined result (6 rule 6), recomputed at each closed candle. "Updates live" in 6 rule 6 is met by the panel's one-second refresh.
+8. **No repainting.** A decision made on a closed candle is final. Later candles make new decisions. They never revise an old one.
+9. **ASCII source.** The two new headers contain only ASCII characters. Every glyph or dash is written as an escape, for example `"\x25BA"` for ► and `"\x2014"` for —. The compiler can misread non-ASCII source bytes, and these files are edited outside MetaEditor (17.9).
+
+### 17.3 Confidence and the signal gate
+
+Four views, each already published with a direction and a score. Their modules are not changed.
+
+| View | Direction d | Score s | Weight w (17.5 row i) |
+|---|---|---|---|
+| Trend | Supertrend `direction` (+1 / −1 / 0) | `supertrendScore` | 0.30 |
+| Structure | SMC `bias` (+1 / −1 / 0) | `smcScore` | 0.30 |
+| Volume flow | `flowDirection` (+1 / −1 / 0) | `volumeFlowScore` | 0.20 |
+| Higher chart | `htfSupertrendDirection` (+1 / −1 / 0) | `mtfScore` | 0.20 |
+
+`mtfScore` carries strength only (15.9); its direction is the HTF Supertrend direction.
+
+- **Combined value:** S = Σ (w × s × d). The weights sum to exactly 1.0, so S lies between −1 and +1. A view pointing the other way pulls S down. A flat view (d = 0) adds nothing.
+- **The number:** BUY confidence = 100 × max(0, S). SELL confidence = 100 × max(0, −S). Row 3 shows the larger of the two as one whole number, `round(100 × |S|)`, with halves rounded up.
+- **The bar** (9.2.4, unchanged): TRENDING 60%, RANGING 70%, VOLATILE 70%, TRANSITION 75%, read from the mood of 17.2 rule 3. The comparison uses the same whole number that Row 3 shows.
+- **Gate:** BUY when S is above 0 and its number is at least the bar. SELL when S is below 0 and its number is at least the bar. Otherwise WAIT, with the reason in 17.6. The gate also needs a valid plan (17.4).
+- **Stay margin (no delay, row h of 17.5):** once a BUY or SELL shows, it stays while its number is at least **bar − 5** (5 confidence points, not price points). This stops a value resting on the bar from flipping the signal. Entering needs the bar; staying needs bar − 5. A change of mood moves the bar at the next closed candle.
+- **Market closed:** Row 2 shows `--`, no evaluation runs, and any open plan ends (17.7).
+
+### 17.4 Entry, Stop, Target, Risk:Reward and Expected Duration
+
+The rules are written for BUY. SELL is the exact mirror: above and below swap, and Ask and Bid swap.
+
+**ATR:** the matrix `atrPeriod` value at the newest closed candle, the same ATR used by 13.5–13.9 and by the Supertrend (11.3).
+
+**Entry**
+- If the published order block points the same way (bias +1) and its near edge lies below the close by more than 0 and by at most `2.0 × ATR` (17.5 row d), Entry = that near edge. Price pulls back into the block.
+- Otherwise (no block, a block the other way, a block too far, or price already inside it, which is distance 0 in 13.9), Entry = the current **Ask** for BUY or **Bid** for SELL, read at the evaluation.
+- BUY and SELL always carry an Entry. WAIT never does.
+
+**Stop (the author's rule)**
+- Two candidates, each used only if it lies below Entry:
+  - the nearest confirmed turning point, which is the newest confirmed swing low (13.3);
+  - the far edge of the order block, only when Entry came from that block.
+- Reference = the candidate **further from Entry**. If only one candidate exists, it is the Reference. If none exists, WAIT (reason in 17.6).
+- Stop = Reference − `0.5 × ATR` (17.5 row a).
+- If the Stop is closer than `1.0 × ATR` to Entry, it moves out to exactly `1.0 × ATR` (row b). It stays beyond the Reference.
+- If the Stop is further than `3.0 × ATR` from Entry (row c), the idea is skipped (WAIT).
+
+**Target (one only)**
+- Candidates on the trade side of Entry: the published fair value gap near edge for a gap above (13.6, 13.9); the largest buy-side pool level (13.7, which publishes the pool price); the published POC, VAH and VAL (15.5, 15.7); and the prior-session naked POC while it is still naked (15.5).
+- Sort the candidates nearest first. The first one that gives at least the minimum Risk:Reward is the Target. If none does, WAIT.
+- Equal prices: fair value gap, buy-side pool, POC, VAH, VAL, naked POC.
+
+**Risk:Reward** = (Target − Entry) ÷ (Entry − Stop), shown as `1:x.x` with one decimal. The minimum is row g of 17.5.
+
+**Expected Duration**
+- Speed (ATR per candle) = Supertrend `distanceATRs` ÷ `barsSinceFlip` (11.6 names both as the momentum inputs for this row). `distanceATRs` is measured on the Supertrend's own side, so it describes the trade's move only while the Supertrend points the trade's way. Otherwise speed is 0 and the floor applies. Speed is never below the floor (row e).
+- Candles to Target = (distance from Entry to Target ÷ ATR) ÷ speed.
+- Shown as a range from `0.5 ×` to `1.5 ×` that estimate (row f). Minutes per candle come from the chart timeframe (M5 = 5, M15 = 15, M30 = 30). Under 2 hours, the range is in minutes (nearest 5). From 2 hours to 3 days, it is in hours (nearest whole). Beyond 3 days, it shows `> 3 days`.
+- Fixed when the plan starts.
+
+### 17.5 Parameter rows Phase 6 adds to the table of 9.2.3
+
+Every number in Phase 6 is a named row here. None of them is a lookback, so Layer 2 scales none of them. A row that is the same in every column is fixed by design, the same standing as the displacement multiple (15.11) and the equal-level tolerance (13.7). It stays a named row so that the table is complete.
+
+| Row | Class | Layer 1 standard (every symbol class) | Layer 3 volatility (Low / Normal / High) | Layer 4 regime (four moods) |
+|---|---|---|---|---|
+| a. Stop buffer beyond the Reference | Management | `0.5 × ATR` | `0.5` in all three | `0.5` in all four |
+| b. Stop minimum distance from Entry | Management | `1.0 × ATR` | `1.0` in all three | `1.0` in all four |
+| c. Stop maximum distance from Entry (skip above it) | Strictness | `3.0 × ATR` | `3.0` in all three | `3.0` in all four |
+| d. Entry reach to the order-block edge | Management | `2.0 × ATR` | `2.0` in all three | `2.0` in all four |
+| e. Speed floor for Expected Duration | Management | `0.2 × ATR` per candle | `0.2` in all three | `0.2` in all four |
+| f. Duration band around the estimate | Management | `0.5 ×` and `1.5 ×` | the same in all three | the same in all four |
+| g. Minimum Risk:Reward | Strictness | `1.5` | `1.5` in all three | TRENDING `1.5`; RANGING, VOLATILE and TRANSITION `2.0` |
+| h. Stay margin below the bar | Strictness | `5` confidence points | `5` in all three | `5` in all four |
+| i. Confidence weights: Trend / Structure / Volume flow / Higher chart | Strictness | `0.30 / 0.30 / 0.20 / 0.20` | the same in all three | the same in all four |
+
+- **Guard rail (9.2.3):** a row that changes follows one change, then the same value stays put for 2 closed candles. The pause limits how often the value itself moves. The signal is judged on every closed candle against the value in effect; a BUY or SELL is never held back waiting for a pause.
+- **Presentation, not parameters:** the display rounding, the 2-hour and 3-day switch points and the Row 3 rounding are fixed text rules.
+- **Required history:** no new gate. Phase 6 adds no lookback, and the 302 / 377 / 402 gate of 15.11 already covers every view.
+
+### 17.6 Panel — what the user sees
+
+The layout does not change: same rows, same width, same font, same palette, no new row. The LIVE TRADE block is absent, so the panel ends at Row 10. Only Row 2 takes a signal colour. Every other row keeps the soft colour, except the red incompatible-timeframe message on Row 10 (6 rule 17 and rule 19).
+
+**Glyphs.** The panel font is `Segoe UI` (`EMTT_FONT`), and the panel text is drawn with label objects. ► (U+25BA), ▲ (U+25B2), ▼ (U+25BC) and ■ (U+25A0) are all in Segoe UI. The ⏸ used for WAIT in the Panel B mock-up of section 5 is not in Segoe UI, so it would not display. WAIT shows ■ instead. Each glyph is written as an escape in code (17.2 rule 9).
+
+While a BUY or SELL is shown:
+- **Price Row:** `►Ask` for BUY, `►Bid` for SELL.
+- **Row 1:** the regime, unchanged.
+- **Row 2:** `SIGNAL: ▲ BUY` in the BUY colour at size 14; `SIGNAL: ▼ SELL` in the SELL colour at size 14 (the mirror of Panel A's ▲).
+- **Row 3:** `Confidence: NN%`, one whole number.
+- **Row 4:** `Entry: <price> / --  (<N> pts away)`, measured from the dealing price.
+- **Row 5:** `Stop Loss: <price> / --  (<N> pts)`, measured from Entry.
+- **Row 6:** `Take Profit: <price> / --  (<N> pts)`, measured from Entry.
+- **Row 7:** `Risk:Reward: 1:x.x`.
+- **Row 8:** `Session: <name> | Expected Duration: ~<low>-<high> <unit>`.
+- **Row 9:** WHY, unchanged from 15.10.
+- **Row 10:** the signal line below.
+
+While WAIT is shown:
+- **Price Row:** no marker.
+- **Row 2:** `SIGNAL: ■ WAIT` in the soft colour at size 12.
+- **Row 3:** `Confidence: NN%`.
+- **Rows 4–7:** `Entry: -- / --  (-- pts away)`, `Stop Loss: -- / --  (-- pts)`, `Take Profit: -- / --  (-- pts)`, `Risk:Reward: --`.
+- **Row 8:** `Session: <name> | Expected Duration: --`.
+- **Row 9:** WHY, unchanged.
+- **Row 10:** the WAIT reason below.
+
+While the chart is loading history, or the market is closed, or the chart is incompatible:
+- **Loading history:** Row 1 and Row 9 show `--`, and Row 8 shows the session, as 9.2.8 says. Row 2 and Rows 3–7 show `--`. Row 10 shows the existing loading line.
+- **Market closed:** Row 1 shows `MARKET CLOSED` (9.2.8). Rows 2–9 show `--`. Row 10 shows the existing Phase 2 market-closed line.
+- **Incompatible chart:** rule 19 applies. Every data field shows `--`, the Price Row stays live and the red message shows.
+
+Rules for every state:
+- The money part of Rows 4–6 shows `--` in every state. No trade size exists before the safety step. Panel B's `$0.00` is the Phase 1 layout example, and Phase 6 shows no dummy money values.
+- Rows 2, 3 and 4–8 change only at a closed candle. The Row 4 distance and the level lines refresh on the one-second timer.
+- The header is unchanged. It may still read `Auto Trading: ON`. The pending and active lines say `No order placed.`
+
+STATUS lines (Row 10), used while the four views are ready — exact wording:
+- Pending plan: `Signal active — waiting for price to reach entry. No order placed.`
+- Active plan: `Signal active — price reached entry. No order placed.`
+- WAIT, one reason at a time, checked in this order:
+  - `Watching — confidence NN%, below the MM% bar.`
+  - `Watching — confidence NN%, below the MM% level that keeps a BUY.` (SELL: keeps a SELL.) Used only when a BUY or SELL was showing and its number has fallen below bar − 5.
+  - `Watching — confidence NN%, but no target gives 1:X.X yet.`
+  - `Watching — confidence NN%, but the stop would be more than 3.0 ATR away.`
+  - `Watching — confidence NN%, but no swing point for the stop yet.`
+  - `Watching — the last idea just ended; a new one can start on the next candle.` (17.7)
+- Level line, shown only while a plan is open and refreshed on the one-second timer. It is a display comparison of the live price with a stored level and changes no state:
+  - `Stop level passed — signal updates at this candle's close.`
+  - `Target level passed — signal updates at this candle's close.`
+
+Row 10 precedence: the rule 19 red message first, then the loading line, then MARKET CLOSED, then the signal line. The signal line replaces the terminal line of 15.10. The Phase 3–5 event lines show only while the four views are not all ready. Their facts remain in Row 9 and in the journal.
+
+### 17.7 Plan lifecycle and results
+
+- A plan starts when a BUY or SELL first appears and passes its checks (17.4). Its levels are fixed (17.2 rule 5).
+- A plan whose Entry is the market price (Ask or Bid) is **active** from the candle that started it. A plan whose Entry is an order-block edge is **pending** until a candle reaches that edge.
+- A candle reaches a level when the level lies between its low and high. **Spread is not added.** Checks use only candles that closed after the plan started.
+- A plan ends at the close of the candle that reaches its end level, or at the close where the signal changes.
+- Each plan ends with exactly one result:
+
+| Result | When |
+|---|---|
+| `target reached` | active, and a candle reaches the Target |
+| `stop reached` | active, and a candle reaches the Stop |
+| `missed` | pending, and a candle reaches the Target before the Entry |
+| `cancelled` | pending, and a candle reaches the Stop before the Entry |
+| `signal changed` | at a closed candle the signal becomes WAIT or the other side |
+| `market closed` or `chart changed` | the market closes, or the symbol or timeframe changes |
+
+- **One candle, more than one level:** the worse result counts. From worst to best the order is: stop reached, cancelled, missed, target reached. So a candle that touches the stop and the entry is recorded as `stop reached`, and a candle that touches the entry and the target while the plan is pending is recorded as `missed`. The journal marks such a candle `shared candle`. The ranking is the builder's reading of "worse"; the author can reorder it.
+- **Exit price:** the level reached, or the candle's close for `signal changed`, `market closed` and `chart changed`.
+- **Next idea:** after a plan ends, a new idea can start at the **next** closed candle. The candle that ended a plan never starts one. On that candle Row 2 shows WAIT with the reason in 17.6. This is the builder's reading of the agreed rule; the author can allow a same-candle start.
+- Plans live in memory only. A restart does not restore them. Nothing is written to a file or a GlobalVariable.
+
+### 17.8 Determinism, state and journal
+
+- The same closed candles give the same four readings, the same confidence number and the same signal. The one value that depends on the live quote is a market-price Entry. It is journaled with its bar time.
+- Work per closed candle is bounded. Nothing runs per tick beyond `UpdatePanel()`.
+- Journal: the existing `PrintFormat` channel, shape `Emtt | <what> | <detail> | bar <time>`. Lines are written on state changes, plan events and WAIT reason changes only:
+  - `Emtt | Signal BUY | confidence 72% | Trending, bar 60% | bar 2026.10.09 14:30`
+  - `Emtt | Plan BUY | confidence 72% | entry 1.08450 (order block edge) | stop 1.08280 (swing low -0.5 ATR) | target 1.09120 (fair value gap) | RR 1:3.9 | expected ~2-4 hours | spread 2 pts | bar 2026.10.09 14:30`
+  - `Emtt | Plan BUY | entry reached | 1.08450 | bar 2026.10.09 15:00`
+  - `Emtt | Plan BUY result | target reached | exit 1.09120 | +670 pts | 12 candles | bar 2026.10.09 17:30`
+  - `Emtt | Plan BUY result | stop reached | exit 1.08280 | -170 pts | 6 candles | shared candle | bar 2026.10.09 16:00`
+  - `Emtt | Signal WAIT | confidence 66%, no target gives 1:1.5 | bar 2026.10.09 14:45`
+  - `Emtt | Signal WAIT | reason changed: stop would be more than 3.0 ATR away | bar 2026.10.09 19:00`
+- Never journaled: the per-candle confidence values, a WAIT that continues with the same reason, and any candle where nothing changed.
+
+### 17.9 Tests, gates and guards
+
+`tests/phase6_reference.py` mirrors 17.2–17.8. `tests/test_phase6_reference.py` asserts, without MT5:
+- **Combination:** the four weights sum to exactly 1.0; S stays between −1 and +1; a flat view adds nothing; an opposing view lowers the number; Row 3 equals `round(100 × |S|)` with halves rounded up.
+- **Gate:** the bar for each mood; the comparison on the whole number; entry at the bar, staying at bar − 5, leaving below it; one closed candle can flip a signal (no hold).
+- **Entry:** a block within `(0, 2.0]` ATR gives its near edge; a block the other way, a block too far, price inside a block, or no block gives the market price; the SELL mirror.
+- **Stop:** only candidates below Entry are used; the further of the turning point and the block far edge is the Reference; a single candidate is used alone; no candidate gives WAIT; the buffer; widening to `1.0 ATR`; skipping above `3.0 ATR`; the SELL mirror.
+- **Target:** the nearest candidate that meets the minimum; candidates below the minimum are skipped; none gives WAIT; the equal-price order.
+- **Risk:Reward:** the formula; one decimal; minimum 1.5 when TRENDING, 2.0 otherwise.
+- **Expected Duration:** the speed formula; the floor; speed 0 when the Supertrend opposes; the `0.5 ×` / `1.5 ×` band; the switch to hours at 2 hours and to `> 3 days`; rounding; fixed after the start.
+- **Lifecycle:** each result of 17.7; the worse-result order for every two-level candle; the next-candle rule; spread not added; candles checked only after the start; the exit prices; a market-price Entry active at once.
+- **Journal:** the plan start line carries the confidence; a WAIT reason change is journaled; a WAIT that continues is not.
+- **Panel text:** each STATUS line and its trigger; Rows 2–8 for BUY, SELL, WAIT and the `--` states; money parts always `--`; the ► rule; the ■ WAIT glyph.
+- **Determinism:** the same closed candles replayed twice give the same confidence, signal and plan.
+
+`tools/mql5_compile_smoke.py` gains the two headers in its required set and asserts these markers: `EMTT_SIG_WEIGHT_TREND 0.30`, `EMTT_SIG_WEIGHT_STRUCTURE 0.30`, `EMTT_SIG_WEIGHT_FLOW 0.20`, `EMTT_SIG_WEIGHT_HTF 0.20`, `EMTT_SIG_STAY_MARGIN 5`, `EMTT_PLAN_STOP_BUFFER_ATR 0.5`, `EMTT_PLAN_STOP_MIN_ATR 1.0`, `EMTT_PLAN_STOP_MAX_ATR 3.0`, `EMTT_PLAN_ENTRY_REACH_ATR 2.0`, `EMTT_PLAN_SPEED_FLOOR 0.2`, `EMTT_PLAN_DURATION_LOW 0.5`, `EMTT_PLAN_DURATION_HIGH 1.5`, `EMTT_PLAN_RR_TREND 1.5`, `EMTT_PLAN_RR_OTHER 2.0`. In the EA it asserts `SEmttSignalState g_signal;`, and the includes `Emtt_TradePlan.mqh` then `Emtt_Signal.mqh`, both after the MTF include. It also asserts the Phase 1 dashboard digest and every Phase 2–5 marker, unchanged.
+
+Three guards apply:
+- the chart-drawing guard of 15.2 rule 1 (the Phase 4 forbidden list), applied to both new headers and the EA;
+- a **no-order guard**, applied to both new headers and the EA: no `OrderSend`, `OrderSendAsync`, `OrderModify`, `OrderDelete`, `PositionModify`, `PositionClose`, `PositionCloseBy` or `CTrade` token;
+- an **ASCII guard**, applied to the two new headers: any byte above 0x7F fails the build (17.2 rule 9).
+
+### 17.10 Not in this phase
+
+No orders of any kind; no lot size; no dollar amounts; no Stop or Take Profit sent to a broker; no LIVE TRADE content; no trade management (breakeven, trailing, partial close, time exit); no news, session or spread blocking; no alerts; no self-learning and no parameter persistence; no signal logic on ticks; no chart drawing; no new input; no new panel row; no change to palette, font or width; no change to any approved module.
+
+---
+
+## 18. Phase 6 — Done When
+
+**Status: SPEC APPROVED (2026-10-09) — NOT YET BUILT.** Every bullet below must hold before the phase is called implemented. The portable bullets are proven by `python -m unittest discover -s tests -v` and `python tools/mql5_compile_smoke.py`. The live-terminal bullets are the author's to confirm on a real MT5 chart. The status stamp of this section is appended only when they pass.
+
+- The 173 existing tests and every new Phase 6 test pass. The compile smoke is green with the two headers, the Phase 6 markers and the three guards (chart drawing, orders, ASCII).
+- `python tools/mql5_parser_check.py` exits `0` on the Phase 6 sources, with the built-in negative control rejected first (Hard Rule 3). The sha256 and node counts are recorded here at delivery, as in sections 8, 10, 12, 14 and 16.
+- `Emtt_Dashboard.mqh` keeps its digest `cc4169b5bd8e`. The other six approved modules are byte-identical. Inputs are still Magic number + Auto Trading. No new chart handle, data file or GlobalVariable exists.
+- No order call exists in the EA or in the new headers. Auto Trading changes nothing but the header word.
+- No chart drawing of any kind. All panel objects are still removed cleanly when the EA is removed.
+- The signal changes only at a closed candle. No hold of two or three candles exists in the code.
+- Entry, Stop, Target, Risk:Reward and Expected Duration are computed from published readings or the ATR. WAIT shows `--` where 17.6 says, money parts included. No level is typed in as a fixed price. Every number is a row of 17.5.
+- The panel matches 17.6: Rows 2–8 and 10 as specified, the ► marker, the ■ WAIT glyph, no LIVE TRADE block, and the colours and sizes of the palette and rule 16. The ⏸ symbol appears nowhere in the code.
+- The journal lines of 17.8 appear on state changes, plan events and WAIT reason changes only. The plan start line carries the confidence.
+- On a live M15 demo chart, the author confirms: (a) SIGNAL and Confidence change only when a candle closes; (b) a BUY's Entry sits on a visible order-block edge or at the Ask; (c) its Stop sits beyond a visible swing low or order-block edge, plus half an ATR; (d) its Target sits on a visible fair value gap, pool or volume level; (e) the journal prices and bar times match the chart; (f) the header reads Auto Trading and no order appears in the Trade tab; (g) Expected Duration is roughly right on a sample of logged plans; (h) ► shows beside Ask or Bid, and ▲, ▼ and ■ show in Row 2 without boxes.
+- On an H1 chart, rule 19 still holds: `--` fields, the red message, and the Price Row still live.
