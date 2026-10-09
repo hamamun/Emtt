@@ -180,6 +180,8 @@ def check_contract(paths: list[Path]) -> None:
         "Include/Emtt/Emtt_SMC.mqh",
         "Include/Emtt/Emtt_VolumeFlow.mqh",
         "Include/Emtt/Emtt_MTF.mqh",
+        "Include/Emtt/Emtt_TradePlan.mqh",
+        "Include/Emtt/Emtt_Signal.mqh",
     }
     missing = required - relative
     if missing:
@@ -349,6 +351,91 @@ def check_contract(paths: list[Path]) -> None:
             if re.search(pattern, source):
                 raise RuntimeError(
                     f"Phase-5 {name} source contains forbidden chart drawing token: {pattern}"
+                )
+
+    #--- Phase 6 (17.9) -------------------------------------------------
+    phase6_trade_plan = (ROOT / "Include" / "Emtt" / "Emtt_TradePlan.mqh").read_text()
+    phase6_signal = (ROOT / "Include" / "Emtt" / "Emtt_Signal.mqh").read_text()
+    phase6_markers = (
+        (phase6_signal, r"EMTT_SIG_WEIGHT_TREND\s+0\.30", "trend confidence weight"),
+        (phase6_signal, r"EMTT_SIG_WEIGHT_STRUCTURE\s+0\.30", "structure confidence weight"),
+        (phase6_signal, r"EMTT_SIG_WEIGHT_FLOW\s+0\.20", "volume-flow confidence weight"),
+        (phase6_signal, r"EMTT_SIG_WEIGHT_HTF\s+0\.20", "higher-chart confidence weight"),
+        (phase6_signal, r"EMTT_SIG_STAY_MARGIN\s+5", "five-point stay margin"),
+        (phase6_trade_plan, r"EMTT_PLAN_STOP_BUFFER_ATR\s+0\.5", "stop buffer beyond the reference"),
+        (phase6_trade_plan, r"EMTT_PLAN_STOP_MIN_ATR\s+1\.0", "stop minimum distance from entry"),
+        (phase6_trade_plan, r"EMTT_PLAN_STOP_MAX_ATR\s+3\.0", "stop maximum distance from entry"),
+        (phase6_trade_plan, r"EMTT_PLAN_ENTRY_REACH_ATR\s+2\.0", "entry reach to the block edge"),
+        (phase6_trade_plan, r"EMTT_PLAN_SPEED_FLOOR\s+0\.2", "expected-duration speed floor"),
+        (phase6_trade_plan, r"EMTT_PLAN_DURATION_LOW\s+0\.5", "duration band low multiple"),
+        (phase6_trade_plan, r"EMTT_PLAN_DURATION_HIGH\s+1\.5", "duration band high multiple"),
+        (phase6_trade_plan, r"EMTT_PLAN_RR_TREND\s+1\.5", "minimum risk:reward in a trend"),
+        (phase6_trade_plan, r"EMTT_PLAN_RR_OTHER\s+2\.0", "minimum risk:reward in other moods"),
+        (ea, r'#include "\.\./Include/Emtt/Emtt_TradePlan\.mqh"', "quoted repo-relative Phase-6 trade-plan include"),
+        (ea, r'#include "\.\./Include/Emtt/Emtt_Signal\.mqh"', "quoted repo-relative Phase-6 signal include"),
+        (ea, r"SEmttSignalState\s+g_signal;", "exactly one signal state instance"),
+        (ea, r"EmttSignalAdvance\(", "signal advanced on the closed-bar path"),
+        (ea, r"EmttSignalStatusText\(", "Row 10 signal line wired into FillPanel"),
+    )
+    for source, pattern, description in phase6_markers:
+        if not re.search(pattern, source):
+            raise RuntimeError(f"missing Phase-6 rule: {description}")
+    if len(re.findall(r"\bSEmttSignalState\s+g_signal\s*;", ea)) != 1:
+        raise RuntimeError("Phase 6 must declare exactly one EA signal state instance")
+    if ea.find("Emtt_MTF.mqh") > ea.find("Emtt_TradePlan.mqh"):
+        raise RuntimeError("Phase-6 trade-plan include must follow Emtt_MTF.mqh")
+    if ea.find("Emtt_TradePlan.mqh") > ea.find("Emtt_Signal.mqh"):
+        raise RuntimeError("Phase-6 signal include must follow Emtt_TradePlan.mqh")
+
+    # 17.9 guard 1: the chart-drawing guard of 15.2 rule 1 (the Phase-4
+    # forbidden list), applied to both new headers and the EA.
+    for source, name in (
+        (phase6_trade_plan, "trade-plan"),
+        (phase6_signal, "signal"),
+        (ea, "EA"),
+    ):
+        for pattern in forbidden_smc:
+            if re.search(pattern, source):
+                raise RuntimeError(
+                    f"Phase-6 {name} source contains forbidden chart drawing token: {pattern}"
+                )
+
+    # 17.9 guard 2: the no-order guard, applied to both new headers and
+    # the EA. Phase 6 says what Emtt would do; nothing sends, modifies,
+    # closes or deletes an order or a position.
+    forbidden_orders = (
+        r"\bOrderSend\b",
+        r"\bOrderSendAsync\b",
+        r"\bOrderModify\b",
+        r"\bOrderDelete\b",
+        r"\bPositionModify\b",
+        r"\bPositionClose\b",
+        r"\bPositionCloseBy\b",
+        r"\bCTrade\b",
+    )
+    for source, name in (
+        (phase6_trade_plan, "trade-plan"),
+        (phase6_signal, "signal"),
+        (ea, "EA"),
+    ):
+        for pattern in forbidden_orders:
+            if re.search(pattern, source):
+                raise RuntimeError(
+                    f"Phase-6 {name} source contains a forbidden order token: {pattern}"
+                )
+
+    # 17.9 guard 3: the ASCII guard (17.2 rule 9), applied to the two new
+    # headers - any byte above 0x7F fails the build.
+    for path, name in (
+        (ROOT / "Include" / "Emtt" / "Emtt_TradePlan.mqh", "trade-plan"),
+        (ROOT / "Include" / "Emtt" / "Emtt_Signal.mqh", "signal"),
+    ):
+        raw = path.read_bytes()
+        for index, byte in enumerate(raw):
+            if byte > 0x7F:
+                line = raw.count(b"\n", 0, index) + 1
+                raise RuntimeError(
+                    f"Phase-6 {name} header is not ASCII-only: byte 0x{byte:02X} at line {line}"
                 )
 
 
