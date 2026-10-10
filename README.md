@@ -83,6 +83,20 @@ combined `Watching — context only, no signal yet` line, and the profile window
 lookback, so the single history gate is now `max(Supertrend, structure, volume flow)` —
 302 / 377 / 402 candles in the worst case.
 
+## Phase 6 — Signal and trade plan (implemented)
+
+`Include/Emtt/Emtt_Signal.mqh` combines the four published views into one confidence figure
+(weights 0.30 trend / 0.30 structure / 0.20 volume flow / 0.20 higher chart), gates it against the
+market-mood bar with a 5-point stay margin, and runs the plan lifecycle with its result journal;
+`Include/Emtt/Emtt_TradePlan.mqh` builds Entry, Stop, Target, Risk:Reward and Expected Duration
+from the published readings and the matrix ATR only — never a typed-in price. The signal changes
+only at a candle close, a plan's levels are fixed while it lasts, and no order is ever sent. Rows
+2–8 fill for the first time: SIGNAL with ▲ / ▼ / ■, the confidence number, Entry / Stop / Take
+Profit with `--` money parts, Risk:Reward and Expected Duration, and Row 10 carries the pending /
+active / WAIT-reason / level-passed lines, each plan line ending `No order placed.` The LIVE TRADE
+block stays hidden, the seven approved headers stay byte-identical, and the inputs are still
+Magic number + Auto Trading.
+
 Run the portable checks with:
 
 ```sh

@@ -1,14 +1,15 @@
 //+------------------------------------------------------------------+
 //|                                                       Emtt.mq5   |
 //|                Emtt - MT5 Trading Expert Adviser                 |
-//| Phase 5: closed-bar volume flow + higher-timeframe agreement    |
+//| Phase 6: signal and trade plan (no orders)                      |
 //|                Spec: Emtt.md | Author: Ham | Coder: Arena        |
 //+------------------------------------------------------------------+
 #property copyright   "Author: Ham | Coder: Arena"
 #property link        ""
-#property version     "1.40"
+#property version     "1.50"
 #property description "Emtt V1.0 - MT5 Trading Expert Adviser."
 #property description "Phase 5: closed-bar volume flow (VWAP, profile, CVD) and higher-timeframe agreement."
+#property description "Phase 6: signal and trade plan (no orders)."
 #property description "Allowed analysis timeframes: M5 / M15 / M30 only."
 
 #include "../Include/Emtt/Emtt_Dashboard.mqh"
@@ -18,6 +19,8 @@
 #include "../Include/Emtt/Emtt_SMC.mqh"
 #include "../Include/Emtt/Emtt_VolumeFlow.mqh"
 #include "../Include/Emtt/Emtt_MTF.mqh"
+#include "../Include/Emtt/Emtt_TradePlan.mqh"
+#include "../Include/Emtt/Emtt_Signal.mqh"
 
 input long InpMagicNumber=20251007;   // Magic number
 input bool InpAutoTrading=true;       // Auto Trading ON/OFF
@@ -66,6 +69,7 @@ SEmttSmcState              g_smc;
 SEmttVolumeFlowState       g_volumeFlow;
 SEmttMtfState              g_mtf;
 SEmttMtfContext            g_mtfContext;
+SEmttSignalState           g_signal;
 SEmttBrokerOffsetState     g_brokerOffset;
 SEmttRegimeMeasurements    g_snapshotMeasurements;
 EEmttRegime                g_snapshotRegime=EMTT_REGIME_UNKNOWN;
@@ -628,6 +632,44 @@ bool EmttReplayClosedHistory()
                   g_smc.smcScore,
                   TimeToString(g_snapshotBarTime,TIME_DATE|TIME_MINUTES));
      }
+
+   // Phase 6 (17.8): plans live in memory only, so the replay rebuilds the
+   // four views and then evaluates the signal once at the newest closed
+   // bar. A restart never restores a plan; a fresh idea starts here, and
+   // the market-price Entry is the one value that depends on the live quote.
+   MqlRates signalReplayBar[1];
+   if(CopyRates(g_symbol,g_timeframe,1,1,signalReplayBar)==1 &&
+      signalReplayBar[0].time==rates[0].time)
+     {
+      double signalAtr=0.0;
+      EmttCopyOne(EmttAtrHandle(g_dynamic.atrPeriod),0,1,signalAtr);
+      MqlTick signalTick;
+      double signalBid=0.0,signalAsk=0.0;
+      if(SymbolInfoTick(g_symbol,signalTick))
+        {
+         signalBid=signalTick.bid;
+         signalAsk=signalTick.ask;
+        }
+      else
+        {
+         signalBid=SymbolInfoDouble(g_symbol,SYMBOL_BID);
+         signalAsk=SymbolInfoDouble(g_symbol,SYMBOL_ASK);
+        }
+      const double signalPoint=SymbolInfoDouble(g_symbol,SYMBOL_POINT);
+      const int signalDigits=(int)SymbolInfoInteger(g_symbol,SYMBOL_DIGITS);
+      int signalSpread=0;
+      if(signalPoint>0.0)
+         signalSpread=(int)MathRound((signalAsk-signalBid)/signalPoint);
+      const EEmttRegime signalMood=
+        (g_regimeState.pending!=EMTT_REGIME_UNKNOWN ?
+         g_regimeState.pending : g_snapshotRegime);
+      EmttSignalAdvance(g_signal,g_supertrend,g_smc,g_volumeFlow,g_mtf,
+                        signalMood,signalAtr,signalReplayBar[0].high,
+                        signalReplayBar[0].low,signalReplayBar[0].close,
+                        signalBid,signalAsk,signalSpread,g_timeframe,
+                        g_evaluatedBarSequence-1,rates[0].time,
+                        signalDigits,signalPoint,true);
+     }
    return true;
   }
 
@@ -806,6 +848,43 @@ bool EmttProcessLatestClosedBar(const bool forceFirstEvaluation)
                   sequence,g_supertrend.direction,g_smc.bias,
                   forceFirstEvaluation || afterGap,true);
 
+   // Phase 6: the signal gate and plan lifecycle run on this closed bar,
+   // after the four component views advanced (17.1). The signal changes
+   // only at a candle close; no order is placed here.
+   MqlRates signalBar[1];
+   if(CopyRates(g_symbol,g_timeframe,1,1,signalBar)==1)
+     {
+      double signalAtr=0.0;
+      EmttCopyOne(EmttAtrHandle(g_dynamic.atrPeriod),0,1,signalAtr);
+      MqlTick signalTick;
+      double signalBid=0.0,signalAsk=0.0;
+      if(SymbolInfoTick(g_symbol,signalTick))
+        {
+         signalBid=signalTick.bid;
+         signalAsk=signalTick.ask;
+        }
+      else
+        {
+         signalBid=SymbolInfoDouble(g_symbol,SYMBOL_BID);
+         signalAsk=SymbolInfoDouble(g_symbol,SYMBOL_ASK);
+        }
+      const double signalPoint=SymbolInfoDouble(g_symbol,SYMBOL_POINT);
+      const int signalDigits=(int)SymbolInfoInteger(g_symbol,SYMBOL_DIGITS);
+      int signalSpread=0;
+      if(signalPoint>0.0)
+         signalSpread=(int)MathRound((signalAsk-signalBid)/signalPoint);
+      // 17.2 rule 3: the mood is the regime's pending candidate when one
+      // is open, otherwise its confirmed label.
+      const EEmttRegime signalMood=
+        (g_regimeState.pending!=EMTT_REGIME_UNKNOWN ?
+         g_regimeState.pending : regime);
+      EmttSignalAdvance(g_signal,g_supertrend,g_smc,g_volumeFlow,g_mtf,
+                        signalMood,signalAtr,signalBar[0].high,
+                        signalBar[0].low,signalBar[0].close,
+                        signalBid,signalAsk,signalSpread,g_timeframe,
+                        sequence,barTime,signalDigits,signalPoint,true);
+     }
+
    EmttSetSnapshot(measurements,regime,percentile,barTime);
    g_lastClosedBarTime=barTime;
    g_evaluatedBarSequence++;
@@ -817,6 +896,10 @@ bool EmttProcessLatestClosedBar(const bool forceFirstEvaluation)
 //+------------------------------------------------------------------+
 void EmttResetMarketState()
   {
+   // 17.7: a symbol or timeframe change ends any open plan before the
+   // signal state is reset; plans live in memory only.
+   EmttSignalChartChanged(g_signal,true);
+   EmttSignalReset(g_signal);
    EmttDynamicReset(g_dynamic);
    EmttRegimeReset(g_regimeState);
    EmttSupertrendReset(g_supertrend);
@@ -955,6 +1038,8 @@ void EmttRefreshFoundation()
      {
       // Closed applies immediately, without waiting for history or a new bar.
       EmttRegimeMarkMarketClosed(g_regimeState);
+      // 17.7: the market closing ends any open plan; no evaluation runs.
+      EmttSignalMarketClosed(g_signal,true);
       g_marketWasClosed=true;
      }
    else
@@ -1014,6 +1099,13 @@ void FillPanel(SEmttPanelData &d)
    if(point>0.0)
       spreadPts=(int)MathRound((ask-bid)/point);
 
+   // Phase 6: a signal needs all four views ready; until then Rows 2-7
+   // show "--" exactly like the loading state (17.2 rule 4, 17.6).
+   const bool sigReady=(g_supertrend.ready && g_smc.ready &&
+                        g_volumeFlow.ready && g_mtf.ready);
+   const bool planShowing=(sigReady && g_signal.plan.active &&
+                           g_signal.signal!=0);
+
    d.header=EmttHeaderText();
    d.signalClr=EMTT_CLR_TEXT;
    d.signalSize=EMTT_FSIZE;
@@ -1021,16 +1113,17 @@ void FillPanel(SEmttPanelData &d)
    d.floatingClr=EMTT_CLR_TEXT;
    d.showLive=false;
 
-   // Phase 2 fills only the fields it actually measures. Signal/trade values
-   // stay label-only until their implementing phases have been requested.
-   d.regime="Regime:";
-   d.signal="SIGNAL:";
-   d.confidence="Confidence:";
-   d.entry="Entry:";
-   d.stopLoss="Stop Loss:";
-   d.takeProfit="Take Profit:";
-   d.riskReward="Risk:Reward:";
-   d.session="Session:  |  Expected Duration:";
+   // Phase 2 fills only the fields it actually measures; Phase 6 fills
+   // Rows 2-8 from the signal state. The money part of Rows 4-6 is "--"
+   // in every state: no trade size exists before the safety step (17.6).
+   d.regime="Regime: --";
+   d.signal="SIGNAL: --";
+   d.confidence="Confidence: --";
+   d.entry="Entry: -- / --  (-- pts away)";
+   d.stopLoss="Stop Loss: -- / --  (-- pts)";
+   d.takeProfit="Take Profit: -- / --  (-- pts)";
+   d.riskReward="Risk:Reward: --";
+   d.session="Session: -- | Expected Duration: --";
    d.why="--";
    d.status="";
 
@@ -1038,23 +1131,24 @@ void FillPanel(SEmttPanelData &d)
      {
       // Rule 19 wins over all state messages on unsupported timeframes.
       d.regime="Regime: --";
-      d.session="Session: -- | Expected Duration:";
+      d.session="Session: -- | Expected Duration: --";
       d.why="--";
       d.status="Incompatible chart. Switch to M5/M15/M30.";
       d.statusClr=EMTT_CLR_SELL;
      }
    else if(!g_marketOpen)
      {
+      // 17.6: MARKET CLOSED leaves Rows 2-9 at "--".
       d.regime="Regime: MARKET CLOSED";
-      d.session="Session: -- | Expected Duration:";
+      d.session="Session: -- | Expected Duration: --";
       d.why="--";
       d.status=EmttStatusForRegime(EMTT_REGIME_MARKET_CLOSED);
      }
    else
      {
-      d.session="Session: "+g_sessionName+" | Expected Duration:";
       if(!g_snapshotReady)
         {
+         d.session="Session: "+g_sessionName+" | Expected Duration:";
          d.regime="Regime: --";
          d.why="--";
          d.status=StringFormat("Waiting — Loading chart history (%d/%d candles)",
@@ -1062,6 +1156,65 @@ void FillPanel(SEmttPanelData &d)
         }
       else
         {
+         // Row 8: the session is always measured; the Expected Duration
+         // fills only while a plan is showing.
+         if(sigReady)
+            d.session="Session: "+g_sessionName+" | Expected Duration: "+
+                      (planShowing ? g_signal.plan.duration : "--");
+         else
+            d.session="Session: "+g_sessionName+" | Expected Duration:";
+
+         if(sigReady)
+           {
+            // Row 2: the signal with its glyph, colour and size (17.6).
+            if(g_signal.signal>0)
+              {
+               d.signal="SIGNAL: "+EmttGlyph(EMTT_G_BUY)+" BUY";
+               d.signalClr=EMTT_CLR_BUY;
+               d.signalSize=EMTT_FSIZE_SIG;
+              }
+            else if(g_signal.signal<0)
+              {
+               d.signal="SIGNAL: "+EmttGlyph(EMTT_G_SELL)+" SELL";
+               d.signalClr=EMTT_CLR_SELL;
+               d.signalSize=EMTT_FSIZE_SIG;
+              }
+            else
+               d.signal="SIGNAL: "+EmttGlyph(EMTT_SIG_GLYPH_WAIT)+" WAIT";
+            d.confidence="Confidence: "+
+                         IntegerToString(g_signal.confidence)+"%";
+            if(planShowing)
+              {
+               // Rows 4-7: the fixed plan levels. Row 4's distance is
+               // measured from the dealing price and refreshes live;
+               // Rows 5-6 are measured from Entry.
+               const double dealing=(g_signal.signal>0 ? ask : bid);
+               const int entryPts=(point>0.0 ?
+                                   (int)MathRound(MathAbs(dealing-
+                                                       g_signal.plan.entry)/
+                                                  point) : 0);
+               const int stopPts=(point>0.0 ?
+                                  (int)MathRound(MathAbs(g_signal.plan.entry-
+                                                         g_signal.plan.stop)/
+                                                 point) : 0);
+               const int targetPts=(point>0.0 ?
+                                    (int)MathRound(MathAbs(g_signal.plan.target-
+                                                           g_signal.plan.entry)/
+                                                   point) : 0);
+               d.entry="Entry: "+
+                       DoubleToString(g_signal.plan.entry,digits)+
+                       " / --  ("+IntegerToString(entryPts)+" pts away)";
+               d.stopLoss="Stop Loss: "+
+                          DoubleToString(g_signal.plan.stop,digits)+
+                          " / --  ("+IntegerToString(stopPts)+" pts)";
+               d.takeProfit="Take Profit: "+
+                            DoubleToString(g_signal.plan.target,digits)+
+                            " / --  ("+IntegerToString(targetPts)+" pts)";
+               d.riskReward="Risk:Reward: 1:"+
+                            DoubleToString(g_signal.plan.riskReward,1);
+              }
+           }
+
          d.regime="Regime: "+EmttRegimeName(g_snapshotRegime);
          d.why=EmttRegimeWhyPending(g_regimeState.pending,
                                     g_snapshotMeasurements,
@@ -1095,26 +1248,37 @@ void FillPanel(SEmttPanelData &d)
          d.why=EmttWhyWithVolumeFlow(d.why,g_volumeFlow,digits);
          d.why=EmttWhyWithMtf(d.why,g_mtf,g_supertrend.direction);
 
-         // Phase 5 Row 10 precedence: MTF flip > CHoCH > BOS > sweep >
-         // CVD flip > Phase 3 > Phase 2, and the combined context-only line
-         // once all four components are ready and nothing is fresh.
-         const string volumeFlowStatus=EmttStatusForVolumeFlow(g_volumeFlow);
-         const string mtfStatus=EmttStatusForMtf(g_mtf);
-         const bool smcFresh=(smcStatus!="" &&
-                              !EmttSmcStatusIsContextOnly(smcStatus));
-         const bool fullContext=(g_supertrend.ready &&
-                                 g_supertrend.direction!=0 && g_smc.ready &&
-                                 g_volumeFlow.ready && g_mtf.ready);
-         if(fullContext && !smcFresh && volumeFlowStatus=="" && mtfStatus=="")
-            d.status=EMTT_ROW10_CONTEXT_ONLY;
+         // Row 10: the Phase 6 signal line replaces the terminal line of
+         // 15.10 once all four views are ready; the Phase 3-5 event lines
+         // show only while they are not (17.6).
+         if(sigReady)
+           {
+            d.status=EmttSignalStatusText(g_signal,bid,ask);
+           }
          else
            {
-            if(volumeFlowStatus!="")
-               d.status=volumeFlowStatus;
-            if(smcFresh)
-               d.status=smcStatus;
-            if(mtfStatus!="")
-               d.status=mtfStatus;
+            // Phase 5 Row 10 precedence: MTF flip > CHoCH > BOS > sweep >
+            // CVD flip > Phase 3 > Phase 2, and the combined context-only
+            // line once all four components are ready and nothing is fresh.
+            const string volumeFlowStatus=EmttStatusForVolumeFlow(g_volumeFlow);
+            const string mtfStatus=EmttStatusForMtf(g_mtf);
+            const bool smcFresh=(smcStatus!="" &&
+                                 !EmttSmcStatusIsContextOnly(smcStatus));
+            const bool fullContext=(g_supertrend.ready &&
+                                    g_supertrend.direction!=0 && g_smc.ready &&
+                                    g_volumeFlow.ready && g_mtf.ready);
+            if(fullContext && !smcFresh && volumeFlowStatus=="" &&
+               mtfStatus=="")
+               d.status=EMTT_ROW10_CONTEXT_ONLY;
+            else
+              {
+               if(volumeFlowStatus!="")
+                  d.status=volumeFlowStatus;
+               if(smcFresh)
+                  d.status=smcStatus;
+               if(mtfStatus!="")
+                  d.status=mtfStatus;
+              }
            }
         }
      }
@@ -1131,9 +1295,21 @@ void FillPanel(SEmttPanelData &d)
       d.protect="Protect:";
      }
 
-   d.priceRow="Bid: "+DoubleToString(bid,digits)+"  |  "+
-              "Ask: "+DoubleToString(ask,digits)+"  |  "+
-              "Spread: "+IntegerToString(spreadPts)+" pts";
+   // Rule 2: the arrow marks the dealing side - Ask for BUY, Bid for
+   // SELL, no marker while WAIT or in any "--" state (17.6).
+   const string arrow=EmttGlyph(EMTT_G_ARROW);
+   if(planShowing && g_signal.signal>0)
+      d.priceRow="Bid: "+DoubleToString(bid,digits)+"  |  "+
+                 arrow+"Ask: "+DoubleToString(ask,digits)+"  |  "+
+                 "Spread: "+IntegerToString(spreadPts)+" pts";
+   else if(planShowing && g_signal.signal<0)
+      d.priceRow=arrow+"Bid: "+DoubleToString(bid,digits)+"  |  "+
+                 "Ask: "+DoubleToString(ask,digits)+"  |  "+
+                 "Spread: "+IntegerToString(spreadPts)+" pts";
+   else
+      d.priceRow="Bid: "+DoubleToString(bid,digits)+"  |  "+
+                 "Ask: "+DoubleToString(ask,digits)+"  |  "+
+                 "Spread: "+IntegerToString(spreadPts)+" pts";
   }
 
 void UpdatePanel()
@@ -1175,6 +1351,7 @@ int OnInit()
    EmttSmcReset(g_smc);
    EmttVfReset(g_volumeFlow);
    EmttMtfReset(g_mtf,g_mtfContext);
+   EmttSignalReset(g_signal);
    EmttJournalTimeframeContext();
    EmttCreateIndicators();
 
