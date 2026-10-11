@@ -10,7 +10,7 @@
 //| rules. It draws nothing, places nothing and reads no chart.      |
 //| A leftover .tmp from a crash is consumed by the init write of    |
 //| 19.3 event 1: the rename moves it over the record, so the file   |
-//| guard of 19.10 can forbid FileDelete and still leave no stale    |
+//| guard of 19.10 can forbid deletion and still leave no stale      |
 //| .tmp behind after init.                                          |
 //| ASCII source only (17.2 rule 9): every dash or glyph would be an |
 //| escape, so this file contains no byte above 0x7F.                |
