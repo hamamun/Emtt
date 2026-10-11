@@ -6,10 +6,11 @@
 //+------------------------------------------------------------------+
 #property copyright   "Author: Ham | Coder: Arena"
 #property link        ""
-#property version     "1.50"
+#property version     "1.51"
 #property description "Emtt V1.0 - MT5 Trading Expert Adviser."
 #property description "Phase 5: closed-bar volume flow (VWAP, profile, CVD) and higher-timeframe agreement."
 #property description "Phase 6: signal and trade plan (no orders)."
+#property description "Panel revamp: WHY removed, STATUS single-line, Summary Today/All-Time, dynamic width."
 #property description "Allowed analysis timeframes: M5 / M15 / M30 only."
 
 #include "../Include/Emtt/Emtt_Dashboard.mqh"
@@ -21,6 +22,7 @@
 #include "../Include/Emtt/Emtt_MTF.mqh"
 #include "../Include/Emtt/Emtt_TradePlan.mqh"
 #include "../Include/Emtt/Emtt_Signal.mqh"
+#include "../Include/Emtt/Emtt_Summary.mqh"
 
 input long InpMagicNumber=20251007;   // Magic number
 input bool InpAutoTrading=true;       // Auto Trading ON/OFF
@@ -70,6 +72,7 @@ SEmttVolumeFlowState       g_volumeFlow;
 SEmttMtfState              g_mtf;
 SEmttMtfContext            g_mtfContext;
 SEmttSignalState           g_signal;
+SEmttSummaryState          g_summary;
 SEmttBrokerOffsetState     g_brokerOffset;
 SEmttRegimeMeasurements    g_snapshotMeasurements;
 EEmttRegime                g_snapshotRegime=EMTT_REGIME_UNKNOWN;
@@ -669,6 +672,7 @@ bool EmttReplayClosedHistory()
                         signalBid,signalAsk,signalSpread,g_timeframe,
                         g_evaluatedBarSequence-1,rates[0].time,
                         signalDigits,signalPoint,true);
+      EmttConsumeSignalEvents();
      }
    return true;
   }
@@ -883,6 +887,7 @@ bool EmttProcessLatestClosedBar(const bool forceFirstEvaluation)
                         signalBar[0].low,signalBar[0].close,
                         signalBid,signalAsk,signalSpread,g_timeframe,
                         sequence,barTime,signalDigits,signalPoint,true);
+      EmttConsumeSignalEvents();
      }
 
    EmttSetSnapshot(measurements,regime,percentile,barTime);
@@ -899,6 +904,7 @@ void EmttResetMarketState()
    // 17.7: a symbol or timeframe change ends any open plan before the
    // signal state is reset; plans live in memory only.
    EmttSignalChartChanged(g_signal,true);
+   EmttConsumeSignalEvents();
    EmttSignalReset(g_signal);
    EmttDynamicReset(g_dynamic);
    EmttRegimeReset(g_regimeState);
@@ -939,6 +945,8 @@ bool EmttAdoptChartContext(const bool journalTimeframeChange)
    EmttResetMarketState();
    EmttCreateIndicators();
    g_symbolValidationBars=0;
+   // New symbol and/or timeframe: bind the Summary counts to its file.
+   EmttSummaryInit(g_summary,g_symbol,g_timeframe);
 
    if(symbolChanged || classChanged)
       PrintFormat("Emtt | Symbol revalidated | %s (%s) -> %s (%s) | closed-bar context rebuilt",
@@ -1040,6 +1048,7 @@ void EmttRefreshFoundation()
       EmttRegimeMarkMarketClosed(g_regimeState);
       // 17.7: the market closing ends any open plan; no evaluation runs.
       EmttSignalMarketClosed(g_signal,true);
+      EmttConsumeSignalEvents();
       g_marketWasClosed=true;
      }
    else
@@ -1073,6 +1082,25 @@ void EmttRefreshFoundation()
                   g_evaluatedBarSequence,g_supertrend.direction,g_smc.bias,
                   false,true);
    UpdatePanel();
+  }
+
+//+------------------------------------------------------------------+
+//| Consume the one-shot Summary events left by the last signal call: |
+//| a started plan counts a signal, TARGET a win, STOP a loss, every |
+//| other result neither (the Phase 7 labels of 19.4). Called right  |
+//| after each EmttSignalAdvance / MarketClosed / ChartChanged call, |
+//| never on a tick.                                                  |
+//+------------------------------------------------------------------+
+void EmttConsumeSignalEvents()
+  {
+   if(g_signal.signalStarted)
+      EmttSummaryOnSignal(g_summary);
+   if(g_signal.endedResult==EMTT_PLAN_RESULT_TARGET)
+      EmttSummaryOnWin(g_summary);
+   else if(g_signal.endedResult==EMTT_PLAN_RESULT_STOP)
+      EmttSummaryOnLoss(g_summary);
+   g_signal.signalStarted=false;
+   g_signal.endedResult=EMTT_PLAN_RESULT_NONE;
   }
 
 //+------------------------------------------------------------------+
@@ -1283,6 +1311,13 @@ void FillPanel(SEmttPanelData &d)
         }
      }
 
+   // Summary rows: real Today / All-Time counts from the per-symbol,
+   // per-timeframe file. Shown in every state - the file does not
+   // depend on the views, the market or the timeframe gate.
+   EmttSummaryRollover(g_summary);
+   d.summaryToday=EmttSummaryTodayText(g_summary);
+   d.summaryAllTime=EmttSummaryAllTimeText(g_summary);
+
    // A live Emtt position is detected by symbol + magic; manual trades never
    // make the block appear. Phase 2 intentionally does not invent trade data.
    if(EmttOwnPositionOpen())
@@ -1352,6 +1387,8 @@ int OnInit()
    EmttVfReset(g_volumeFlow);
    EmttMtfReset(g_mtf,g_mtfContext);
    EmttSignalReset(g_signal);
+   // Panel revamp: Today / All-Time counts for this symbol + timeframe.
+   EmttSummaryInit(g_summary,g_symbol,g_timeframe);
    EmttJournalTimeframeContext();
    EmttCreateIndicators();
 
@@ -1365,6 +1402,7 @@ int OnInit()
 void OnDeinit(const int reason)
   {
    EventKillTimer();
+   EmttSummarySave(g_summary); // flush the Summary counts
    if(EmttOwnPositionOpen() && g_dynamic.thresholdFrozen)
      {
       GlobalVariableSet(EmttFrozenContextKey(),(double)g_dynamic.frozenThreshold);

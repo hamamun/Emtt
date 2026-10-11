@@ -1,6 +1,9 @@
 //+------------------------------------------------------------------+
 //|                                             Emtt_Dashboard.mqh   |
 //|                   Emtt - Phase 1: on-chart panel layout          |
+//| Panel revamp 2026-10-11 (author): WHY removed, STATUS 1 line,   |
+//| Summary Today + All-Time, dynamic width, no cap. Rules 11-13 of  |
+//| section 6 as written are superseded for these rows.              |
 //|                   Spec: Emtt.md sections 4-7                     |
 //|                   Author: Ham | Coder: Arena                     |
 //+------------------------------------------------------------------+
@@ -67,9 +70,12 @@ struct SEmttPanelData
    string takeProfit;  // Row 6
    string riskReward;  // Row 7
    string session;     // Row 8
-   string why;         // Row 9 body (renderer prefixes "WHY: ")
-   string status;      // Row 10 body (renderer prefixes "STATUS: ")
+   string why;         // deprecated (WHY row removed 2026-10-11): kept so
+                       // FillPanel still compiles; the renderer ignores it
+   string status;      // STATUS body, shown as one full line (no wrap)
    color  statusClr;   // soft, except red for the incompatible-TF message
+   string summaryToday;    // Summary row 1 (full text incl. "Today: ")
+   string summaryAllTime;  // Summary row 2 (full text incl. "All Time: ")
    bool   showLive;    // rule 8: LIVE TRADE block present
    string liveHeader;  // "diamond LIVE TRADE - On M15"
    string ticket;      // Row 11
@@ -80,7 +86,7 @@ struct SEmttPanelData
   };
 
 //--- panel state -----------------------------------------------------
-int    g_panelWidth=0;          // fixed width, locked in EmttDashboardInit
+int    g_panelWidth=0;          // dynamic width, recomputed every render
 int    g_panelX=10;             // top-left anchor (rule 14)
 int    g_panelY=10;
 bool   g_dragging=false;
@@ -121,6 +127,14 @@ int EmttFontH(const int size)
 //+------------------------------------------------------------------+
 double EmttTextWidth(const string text,const int size)
   {
+// Dynamic width measures every render, so the cache is bounded: a quiet
+// reset keeps memory flat on tick-heavy symbols with ever-new prices.
+   if(g_mCount>=5000)
+     {
+      ArrayFree(g_mKeys);
+      ArrayFree(g_mVals);
+      g_mCount=0;
+     }
    const string key=IntegerToString(size)+"|"+text;
    for(int i=0;i<g_mCount;i++)
       if(g_mKeys[i]==key)
@@ -151,9 +165,11 @@ double EmttTextWidth(const string text,const int size)
   }
 
 //+------------------------------------------------------------------+
-//| Initialise the dashboard: background object + fixed panel width.  |
-//| Width is measured once from the longest Panel-A rows (rule 13)    |
-//| and never changes afterwards.                                     |
+//| Initialise the dashboard: background object + first width guess.  |
+//| The width is dynamic (author direction 2026-10-11): every render |
+//| remeasures the visible rows and fits the longest one, growing    |
+//| and shrinking with no cap. Init only seeds a sane width so the   |
+//| very first paint has one.                                         |
 //+------------------------------------------------------------------+
 void EmttDashboardInit(const string headerSample)
   {
@@ -161,34 +177,9 @@ void EmttDashboardInit(const string headerSample)
    if(ObjectFind(0,bg)<0)
       ObjectCreate(0,bg,OBJ_RECTANGLE_LABEL,0,0,0);
 
-   // Width templates below are MEASURED ONLY and never rendered. They
-   // mirror the final content formats of Emtt.md section 5, so the panel
-   // keeps its final fixed width (rule 13) through every phase even while
-   // rows still show labels only.
-   int maxw=(int)EmttTextWidth(headerSample,EMTT_FSIZE);
-   string s;
-   s="Bid: 1.08538  |  "+EmttGlyph(EMTT_G_ARROW)+"Ask: 1.08540  |  Spread: 12 pts";
-   maxw=MathMax(maxw,(int)EmttTextWidth(s,EMTT_FSIZE));
-   s="SIGNAL: "+EmttGlyph(EMTT_G_BUY)+" BUY";
-   maxw=MathMax(maxw,(int)EmttTextWidth(s,EMTT_FSIZE_SIG));
-   s="Entry:        1.08450 / $142.50   (90 pts away)";
-   maxw=MathMax(maxw,(int)EmttTextWidth(s,EMTT_FSIZE));
-   s="Stop Loss:    1.08280 / $170.00   (170 pts)";
-   maxw=MathMax(maxw,(int)EmttTextWidth(s,EMTT_FSIZE));
-   s="Take Profit:  1.09120 / $670.00   (670 pts)";
-   maxw=MathMax(maxw,(int)EmttTextWidth(s,EMTT_FSIZE));
-   s="Session: London | Expected Duration: ~2-4 hours";
-   maxw=MathMax(maxw,(int)EmttTextWidth(s,EMTT_FSIZE));
-   s="Ticket: 48217291 | BUY 0.50 lots @ 1.08450";
-   maxw=MathMax(maxw,(int)EmttTextWidth(s,EMTT_FSIZE));
-   s="Live SL: 1.08455 (83 pts) | TP1: 1.09120 TP2: 1.09450";
-   maxw=MathMax(maxw,(int)EmttTextWidth(s,EMTT_FSIZE));
-   s="Protect: Breakeven | Age: 00:42 / ~2-4h";
-   maxw=MathMax(maxw,(int)EmttTextWidth(s,EMTT_FSIZE));
-
-   g_panelWidth=maxw+2*EMTT_PAD_X;
-   if(g_panelWidth<360)
-      g_panelWidth=360;
+   g_panelWidth=(int)EmttTextWidth(headerSample,EMTT_FSIZE)+2*EMTT_PAD_X;
+   if(g_panelWidth<2*EMTT_PAD_X+1)
+      g_panelWidth=2*EMTT_PAD_X+1;
   }
 
 //+------------------------------------------------------------------+
@@ -217,42 +208,8 @@ void BSep()
    BAdd("",EMTT_CLR_LINE,0,2);
   }
 
-//+------------------------------------------------------------------+
-//| Rule 12: WHY / STATUS wrap inside the fixed panel width.          |
-//| Continuation lines hang-indent to the label width.                |
-//+------------------------------------------------------------------+
-void VAddWrapped(const string label,const string body,const color clr,const int size)
-  {
-   const int avail=g_panelWidth-2*EMTT_PAD_X;
-   string indent="";
-   const int llen=StringLen(label);
-   for(int k=0;k<llen;k++)
-      indent+=" ";
-   string words[];
-   const int wn=StringSplit(body,' ',words);
-   string cur=label;
-   bool any=false;
-   for(int i=0;i<wn;i++)
-     {
-      const string w=words[i];
-      if(StringLen(w)==0)
-         continue;
-      const string trial=(!any)?cur+w:cur+" "+w;
-      if(EmttTextWidth(trial,size)<=avail)
-        {
-         cur=trial;
-         any=true;
-        }
-      else if(any)
-        {
-         BAdd(cur,clr,size,1);
-         cur=indent+w;
-        }
-      else
-         cur=label+w;      // one very long word: keep whole on first line
-     }
-   BAdd(cur,clr,size,1);
-  }
+// NOTE (2026-10-11): wrapping was removed with the WHY row. STATUS is
+// one full line and the width is dynamic, so no wrapper is needed.
 
 //+------------------------------------------------------------------+
 //| Object pool helpers ------------------------------------------------|
@@ -365,12 +322,13 @@ void EmttLayout()
   }
 
 //+------------------------------------------------------------------+
-//| Render the full panel from one data snapshot (rules 5-6)          |
+//| Render the full panel from one data snapshot. WHY is gone        |
+//| (2026-10-11): STATUS is one full line and Summary adds two rows. |
+//| The width is dynamic: the longest visible row sets it, with no   |
+//| minimum and no cap.                                               |
 //+------------------------------------------------------------------+
 void EmttDashboardRender(const SEmttPanelData &d)
   {
-   if(g_panelWidth<=0)
-      return;
    BClear();
    BAdd(d.header,EMTT_CLR_TEXT,EMTT_FSIZE,0);
    BAdd(d.priceRow,EMTT_CLR_TEXT,EMTT_FSIZE,1);
@@ -386,9 +344,10 @@ void EmttDashboardRender(const SEmttPanelData &d)
    BAdd(d.riskReward,EMTT_CLR_TEXT,EMTT_FSIZE,1);
    BAdd(d.session,EMTT_CLR_TEXT,EMTT_FSIZE,1);
    BSep();
-   VAddWrapped("WHY: ",d.why,EMTT_CLR_TEXT,EMTT_FSIZE);
+   BAdd("STATUS: "+d.status,d.statusClr,EMTT_FSIZE,1);
    BSep();
-   VAddWrapped("STATUS: ",d.status,d.statusClr,EMTT_FSIZE);
+   BAdd(d.summaryToday,EMTT_CLR_TEXT,EMTT_FSIZE,1);
+   BAdd(d.summaryAllTime,EMTT_CLR_TEXT,EMTT_FSIZE,1);
    if(d.showLive)                            // rule 8: block only with an open Emtt trade
      {
       BSep();
@@ -398,6 +357,18 @@ void EmttDashboardRender(const SEmttPanelData &d)
       BAdd(d.liveSL,EMTT_CLR_TEXT,EMTT_FSIZE,1);
       BAdd(d.protect,EMTT_CLR_TEXT,EMTT_FSIZE,1);
      }
+// Dynamic width: fit the longest visible row (text rows only,
+// separators carry no text). No minimum, no cap.
+   int maxw=0;
+   for(int i=0;i<b_n;i++)
+     {
+      if(b_kind[i]==2)
+         continue;
+      maxw=MathMax(maxw,(int)EmttTextWidth(b_text[i],b_size[i]));
+     }
+   g_panelWidth=maxw+2*EMTT_PAD_X;
+   if(g_panelWidth<2*EMTT_PAD_X+1)
+      g_panelWidth=2*EMTT_PAD_X+1;
    EmttLayout();
   }
 

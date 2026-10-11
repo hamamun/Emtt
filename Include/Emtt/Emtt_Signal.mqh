@@ -1,6 +1,8 @@
 //+------------------------------------------------------------------+
 //|                                              Emtt_Signal.mqh     |
 //| Phase 6: confidence engine, signal gate and trade-plan lifecycle |
+//| Panel revamp 2026-10-11: signalStarted / endedResult events feed |
+//| the Summary counts; the engine itself is unchanged.              |
 //| Spec: Emtt.md sections 17.3, 17.6-17.8                           |
 //+------------------------------------------------------------------+
 //| Pure logic over the four published states (Supertrend, SMC,     |
@@ -74,6 +76,8 @@ struct SEmttSignalState
    bool            justEnded;     // a plan ended on the newest candle
    EEmttSigWait    waitReason;
    int             waitSide;      // the kept side for the BELOW_KEEP line
+   bool            signalStarted; // a plan started in this Advance call (Summary event)
+   EEmttPlanResult endedResult;   // plan ended in this call, NONE if none (Summary event)
    SEmttTradePlan  plan;
    double          lastClose;
    datetime        lastBarTime;
@@ -113,6 +117,8 @@ void EmttSignalReset(SEmttSignalState &state)
    state.justEnded=false;
    state.waitReason=EMTT_SIG_WAIT_NONE;
    state.waitSide=0;
+   state.signalStarted=false;
+   state.endedResult=EMTT_PLAN_RESULT_NONE;
    EmttPlanReset(state.plan);
    state.lastClose=0.0;
    state.lastBarTime=0;
@@ -349,6 +355,7 @@ void EmttSignalEndPlan(SEmttSignalState &state,
    EmttPlanReset(state.plan);
    state.signal=0;
    state.justEnded=true;
+   state.endedResult=result;
   }
 
 // 17.7: the market closing ends any open plan. The exit is the last
@@ -463,6 +470,8 @@ void EmttSignalAdvance(SEmttSignalState &state,
    state.mood=mood;
    state.moodBar=EmttSignalMoodBar(mood);
    state.justEnded=false;
+   state.signalStarted=false;
+   state.endedResult=EMTT_PLAN_RESULT_NONE;
 
    const bool ready=(EmttSignalViewsReady(st,smc,vf,mtf) &&
                      state.moodBar>0 && EmttSigValidPositive(atr));
@@ -585,6 +594,7 @@ void EmttSignalAdvance(SEmttSignalState &state,
          state.signal=gateSide;
          state.waitReason=EMTT_SIG_WAIT_NONE;
          state.waitSide=0;
+         state.signalStarted=true;
          EmttSignalJournalPlanStart(state,spreadPts,barTime,writeJournal);
         }
       else

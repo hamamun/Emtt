@@ -54,10 +54,10 @@ At MT5 Chart.
 ║  Risk:Reward:  1:3.9                                      ║  ← Row 7
 ║  Session: London | Expected Duration: ~2-4 hours          ║  ← Row 8
 ║  ───────────────────────────────────────────────────────  ║
-║  WHY: Supertrend bullish + OB support at 1.0845 +         ║  ← Row 9
-║       CVD rising (buyers dominant) + H1 agrees up         ║
+║  STATUS: Signal active — Price +$44.00 toward TP1         ║  ← Row 10 (1 line)
 ║  ───────────────────────────────────────────────────────  ║
-║  STATUS: Signal active — Price +$44.00 toward TP1         ║  ← Row 10
+║  Today: Num of Signal: 5, Win: 3, Loss: 1                 ║  ← Summary
+║  All Time: Num of Signal: 42, Win: 25, Loss: 12           ║  ← Summary
 ║  ───────────────────────────────────────────────────────  ║
 ║  ◆ LIVE TRADE — On M15                                    ║  ← Block header
 ║  Ticket: 48217291 | BUY 0.50 lots @ 1.08450               ║  ← Row 11
@@ -85,9 +85,10 @@ At MT5 Chart.
 ║  Risk:Reward:  --                                         ║
 ║  Session: London | Expected Duration: --                  ║
 ║  ───────────────────────────────────────────────────────  ║
-║  WHY: No agreement — Supertrend flat, price mid-range     ║
-║  ───────────────────────────────────────────────────────  ║
 ║  STATUS: No trade — confidence 48%, below threshold       ║
+║  ───────────────────────────────────────────────────────  ║
+║  Today: Num of Signal: 2, Win: 1, Loss: 0                 ║
+║  All Time: Num of Signal: 18, Win: 10, Loss: 5            ║
 ╚═══════════════════════════════════════════════════════════╝
 ```
 
@@ -114,19 +115,24 @@ There are only these two panels. No other panel exists.
 7. **One position at a time.** Emtt opens only one position per symbol and will not open
    another until that one is closed. Row 11 therefore always shows exactly one ticket.
 8. **LIVE TRADE block** (header + Rows 11–14) appears **only when Emtt's own position is open**,
-   identified by its **magic number** — manual trades are ignored. If the user removes Emtt
+   identified by its **magic number** — manual trades are ignored. It sits after the Summary
+   rows (revamp 2026-10-11; was after Row 10). If the user removes Emtt
    while its trade is still live and re-attaches it later, Emtt finds that position by magic
    number and shows the block again. Otherwise the block is hidden, together with the separator
-   above it, and the panel ends at Row 10.
+   above it, and the panel ends at the Summary rows.
 9. **Auto Trading ON/OFF changes nothing in the panel** except the header word. OFF only means
    Emtt will not place new orders. If its position is already open, the LIVE TRADE block still shows.
 10. **Market Closed** is shown on Row 1 as `Regime: MARKET CLOSED`. No separate panel.
-11. **No extra rows are ever added.** Everything else goes to the **STATUS line (Row 10)** —
+11. **Rows beyond the Phase 1 set:** the two Summary rows (Today / All Time, added 2026-10-11)
+   are the only ones. Everything else still goes to the **STATUS line (Row 10)** —
    reason no order was placed, divergence warning, news warning, final P/L after close.
-12. **WHY and STATUS height:** WHY defaults to 2 lines, STATUS to 1. Either may use more lines
-    when the text is long. Text wraps; **the panel width never changes**.
-13. **Panel size:** width is fixed and sized to the longest row — all text must fit, no cut-off.
-    Height grows and shrinks with the LIVE TRADE block and with WHY / STATUS wrapping.
+12. **WHY and STATUS height (revamp 2026-10-11):** the WHY row (Row 9) is removed and STATUS
+    (Row 10) is always exactly 1 line showing the full text. Nothing wraps anywhere; the
+    width fits the text instead (rule 13).
+13. **Panel size (revamp 2026-10-11, interim):** width is dynamic — every render remeasures
+    the visible rows and fits the longest one, growing and shrinking with no minimum and no
+    cap, so all text fits with no cut-off. Height grows and shrinks with the LIVE TRADE block.
+    Final width limits will be set after Phase 7 & 8.
 14. **Position:** anchored top-left of the chart, and **draggable** by the user.
 15. **Refresh:** 1-second timer for the whole panel. Price Row and Floating P/L also update on
     every tick so they always match the terminal.
@@ -140,7 +146,9 @@ There are only these two panels. No other panel exists.
     separator in its normal place, normal size. Only the data is blank: the header shows
     the real symbol and timeframe (e.g. `TF: H1`), every data field shows `--`
     (`Regime: --`, `SIGNAL: --`, `Confidence: --`, Entry / SL / TP / Risk:Reward / Session /
-    Expected Duration / WHY all `--`), and the STATUS line carries the red message from 4d.
+    Expected Duration all `--`), and the STATUS line carries the red message from 4d.
+    The Summary rows are the exception: they always show the real Today / All-Time counts
+    from that symbol+timeframe file (revamp 2026-10-11).
     The Price Row keeps showing live Bid / Ask / Spread. Emtt gives no signal and places
     no **new** order on this timeframe.
 20. **Block header records the trade's timeframe:** `◆ LIVE TRADE — On M15`, where M15 is
@@ -159,6 +167,15 @@ There are only these two panels. No other panel exists.
 | SELL / Loss | `#EB6F6F` | `C'235,111,111'` |
 | WAIT | `#C8C8C8` | `C'200,200,200'` |
 | STATUS warning (incompatible timeframe) | `#EB6F6F` | `C'235,111,111'` |
+
+**Spec note (panel revamp 2026-10-11 — AUTHOR-APPROVED, IMPLEMENTED in Emtt v1.51).** The author directed: (1) remove the WHY row; (2) keep STATUS as exactly 1 full line, no wrap, no truncate; (3) add a Summary section of 2 rows with real Today / All-Time signal counts; (4) make the width dynamic with no cap for now. This note supersedes, and only in the ways listed here: the WHY lines of the section 5 mock-ups; rules 11, 12, 13 and the WHY part of rule 19 above; every "Row 9 (WHY)" statement in 9.2.8, 11.8, 13.11, 15.10 and 17.6 (Row 9 is retired — Row 10 STATUS and Rows 11–14 keep their labels so no other reference moves); every "panel ends at Row 10" statement (the panel now ends at the Summary rows, or at the LIVE TRADE block when one is open); and every fixed-width statement ("the panel width never changes", "wraps inside the fixed width"). Everything else of sections 1–18 stands unchanged.
+
+- **Layout now:** Header, Price Row, Row 1 Regime, Rows 2–3 SIGNAL/Confidence, Rows 4–7 Entry/SL/TP/Risk:Reward, Row 8 Session, Row 10 STATUS (1 line), Summary Today, Summary All Time, then — only with an open Emtt position — the ◆ LIVE TRADE block header + Rows 11–14. Screen position is unchanged: anchored top-left, draggable (rule 14).
+- **Summary rows:** `Today: Num of Signal: <n>, Win: <n>, Loss: <n>` and `All Time: Num of Signal: <n>, Win: <n>, Loss: <n>`, soft colour, size 12 like every non-signal row. Shown in every state.
+- **Counting:** a started plan is one signal (Today + All-Time); `target reached` is a win, `stop reached` a loss, every other 17.7 result neither — the 19.4 labels. Counting runs on the closed-bar path only, never on a tick. Today rolls on the server-date change; All-Time never resets.
+- **Storage:** one small text file per symbol and timeframe under `MQL5\Files\Emtt_Learning\` — `<symbol>_<timeframe>.summary`, same folder and sanitiser as 19.3, `.summary` suffix so it never collides with the Phase 7 `.learn` record. Grammar (ASCII, `\r\n` line ends): `Emtt_Summary v1 | <symbol> | <TF>` / `today YYYY.MM.DD | signals N | wins N | losses N` / `alltime signals N | wins N | losses N`. Written whole via `.tmp` + rename on signal start, win, loss, day rollover, init and deinit. Unknown version → file untouched, memory only for the session; malformed → fresh zeros, rewritten clean on next save (the 19.3 failure rules).
+- **Width (interim):** remeasured every render from the longest visible row; no minimum, no cap. Final limits after Phase 7 & 8, per the author's decision.
+- **Open item for Phase 7:** 19.7's Row 9 learning clause (`Learning warming N/30`, `Learning NN% (MM plans)`) has no row anymore. The Phase 7 build must give it a new home or drop it from the panel (journal only) — author decision required before that build.
 
 ---
 

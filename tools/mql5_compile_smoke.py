@@ -182,6 +182,7 @@ def check_contract(paths: list[Path]) -> None:
         "Include/Emtt/Emtt_MTF.mqh",
         "Include/Emtt/Emtt_TradePlan.mqh",
         "Include/Emtt/Emtt_Signal.mqh",
+        "Include/Emtt/Emtt_Summary.mqh",
     }
     missing = required - relative
     if missing:
@@ -195,9 +196,12 @@ def check_contract(paths: list[Path]) -> None:
         raise RuntimeError("Phase-1 dashboard include path changed")
     dashboard = ROOT / "Include" / "Emtt" / "Emtt_Dashboard.mqh"
     digest = hashlib.sha256(dashboard.read_bytes()).hexdigest()
-    phase1_digest = "cc4169b5bd8e5fd5e50ca74bef13b5f363579595a52f38707c561e9ea1612f5e"
-    if digest != phase1_digest:
-        raise RuntimeError("Phase-1 Emtt_Dashboard.mqh must remain unchanged")
+    # Phase-1 digest cc4169b5... superseded by the author-approved panel
+    # revamp of 2026-10-11 (WHY removed, STATUS single-line, Summary
+    # Today/All-Time, dynamic width, no cap).
+    panel_digest = "22392551ed94bb3c38badea5b74e589c5d90f6ca75f41d8cb4ced541b4077b70"
+    if digest != panel_digest:
+        raise RuntimeError("Emtt_Dashboard.mqh changed without updating the panel digest")
 
     dynamic = (ROOT / "Include" / "Emtt" / "Emtt_DynamicParams.mqh").read_text()
     regime = (ROOT / "Include" / "Emtt" / "Emtt_Regime.mqh").read_text()
@@ -437,6 +441,72 @@ def check_contract(paths: list[Path]) -> None:
                 raise RuntimeError(
                     f"Phase-6 {name} header is not ASCII-only: byte 0x{byte:02X} at line {line}"
                 )
+
+    # --- Panel revamp (2026-10-11, author direction) --------------------
+    dashboard_text = dashboard.read_text(encoding="utf-8")
+    summary_path = ROOT / "Include" / "Emtt" / "Emtt_Summary.mqh"
+    summary = summary_path.read_text(encoding="utf-8")
+    revamp_markers = (
+        (dashboard_text, r"summaryToday", "Summary Today row in the panel data"),
+        (dashboard_text, r"summaryAllTime", "Summary All-Time row in the panel data"),
+        (dashboard_text, r'BAdd\("STATUS: "\+d\.status', "single-line STATUS (no wrap)"),
+        (dashboard_text, r"g_panelWidth=maxw\+2\*EMTT_PAD_X", "dynamic width from the longest row"),
+        (summary, r'EMTT_SUMMARY_VERSION\s+"Emtt_Summary v1"', "summary file version"),
+        (summary, r'EMTT_SUMMARY_DIR\s+"Emtt_Learning"', "summary folder (shared with learning)"),
+        (summary, r'EMTT_SUMMARY_EXT\s+"\.summary"', "summary file suffix"),
+        (summary, r"FileMove\(tmpPath,0,state\.filePath,FILE_REWRITE\)", ".tmp whole-file rewrite"),
+        (ea, r'#include "\.\./Include/Emtt/Emtt_Summary\.mqh"', "quoted repo-relative summary include"),
+        (ea, r"SEmttSummaryState\s+g_summary;", "exactly one summary state instance"),
+        (ea, r"EmttSummaryInit\(", "summary loaded on init / context change"),
+        (ea, r"EmttSummaryOnSignal\(", "signal counted on plan start"),
+        (ea, r"EmttSummaryOnWin\(", "win counted on target"),
+        (ea, r"EmttSummaryOnLoss\(", "loss counted on stop"),
+        (ea, r"EmttConsumeSignalEvents\(", "signal events consumed after each advance"),
+    )
+    for source, pattern, description in revamp_markers:
+        if not re.search(pattern, source):
+            raise RuntimeError(f"missing panel-revamp rule: {description}")
+    if len(re.findall(r"\bSEmttSummaryState\s+g_summary\s*;", ea)) != 1:
+        raise RuntimeError("Panel revamp must declare exactly one EA summary state instance")
+    if ea.find("Emtt_Signal.mqh") > ea.find("Emtt_Summary.mqh"):
+        raise RuntimeError("Summary include must follow Emtt_Signal.mqh")
+    if "VAddWrapped" in dashboard_text:
+        raise RuntimeError("Panel revamp removed wrapping; VAddWrapped must be gone")
+    if '"WHY: "' in dashboard_text:
+        raise RuntimeError("Panel revamp removed the WHY row; no WHY label may render")
+
+    # Revamp guards on the new header: the Phase-6 ASCII / no-order /
+    # no-drawing guards, plus a file guard (the record lives only under
+    # Emtt_Learning\, no deletes/copies, no shared-folder access).
+    raw_summary = summary_path.read_bytes()
+    for index, byte in enumerate(raw_summary):
+        if byte > 0x7F:
+            line = raw_summary.count(b"\n", 0, index) + 1
+            raise RuntimeError(
+                f"Panel-revamp summary header is not ASCII-only: byte 0x{byte:02X} at line {line}"
+            )
+    for pattern in forbidden_smc:
+        if re.search(pattern, summary):
+            raise RuntimeError(
+                f"Panel-revamp summary source contains forbidden chart drawing token: {pattern}"
+            )
+    for pattern in forbidden_orders:
+        if re.search(pattern, summary):
+            raise RuntimeError(
+                f"Panel-revamp summary source contains a forbidden order token: {pattern}"
+            )
+    forbidden_summary_files = (
+        r"\bGlobalVariable\w*\s*\(",
+        r"\bFileDelete\s*\(",
+        r"\bFolderDelete\s*\(",
+        r"\bFileCopy\s*\(",
+        r"\bFILE_COMMON\b",
+    )
+    for pattern in forbidden_summary_files:
+        if re.search(pattern, summary):
+            raise RuntimeError(
+                f"Panel-revamp summary source contains forbidden file token: {pattern}"
+            )
 
 
 
