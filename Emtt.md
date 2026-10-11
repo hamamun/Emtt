@@ -2479,3 +2479,249 @@ No orders of any kind; no lot size; no dollar amounts; no Stop or Take Profit se
 - `python tools/mql5_parser_check.py` exits `0` on the Phase 7 sources, negative control rejected first (Hard Rule 3), and the sha256 and node counts are recorded here at delivery, as in sections 8, 10, 12, 14, 16 and 18.
 - On a live M15 demo chart, the author confirms: (a) the file appears and its tickets match the panel and the journal; (b) before warm-up the number is exactly what Phase 6 showed and Row 9 reads `Learning warming N/30`; (c) after warm-up Row 9 reads `Learning NN% (MM plans)`; (d) a plan held back only by learning shows the Row 10 reason; (e) removing and re-attaching the EA, and restarting the terminal, while a plan is open, resumes that plan with the same levels (the journal shows the resume line) and the result still lands; (f) deleting the file starts learning fresh on the next start; (g) the header reads Auto Trading, no order appears in the Trade tab, and the panel layout is unchanged.
 - On H1 and other charts rule 19 still holds: `--` fields, the red message, no learning clause, and the Price Row still live.
+
+---
+
+## 21. Phase 8 — Live Trading: the order, the management, the record (one big phase)
+
+**Status: SPEC WRITTEN (2026-10-11) — DECISIONS APPROVED BY THE AUTHOR; BUILD AUTHORISED TO START IN A NEW CHAT FROM THIS SECTION.** This is the first phase that can place an order. The author's decisions of 2026-10-11: (1) one **big phase** — order placement, trade management, news awareness and the live record in one change set; (2) **news is included**, and it never blocks: Emtt weighs the impact and trades when its factors confirm; (3) **sessions never block** either — autotrade runs in every session, and the spread gate is the only thin-hours protection; (4) **Auto Trading default `false`** — Emtt ships watch-only until the author turns trading on; (5) the inputs are **grouped under an `Auto Trading` heading** (magic number stays alone above); (6) margin check is an input, **default `false` = bypass** (false means Emtt attempts the trade regardless of free margin; true means it respects the check); (7) lot size is an input, **Auto / Minimum, default Auto** — Auto means Emtt works out the lot from gaeni's recorded sizing; (8) a stop-loss input, **default `false`** — false means the order is sent without a stop loss; (9) the plan's own levels are used; an entry waiting at an order-block edge becomes a **pending order**; (10) **TP2 is named at open**, and TP1 / TP2 auto-adjust while the trade lives (21.8); (11) **no soft stop**: Emtt never closes a trade at the planned stop level itself (author's answer to the Point A question); the **first real stop appears at the breakeven trigger** (author's chosen option 1); (12) **time exit closes only when TP1 was hit or the trade is in profit, and never at a loss**; (13) **learning trains on real trade outcomes only** (21.13).
+
+**Risk note — read once.** With the default inputs (`Place stop loss = false`, and no soft stop per decision 11), a trade that moves against Emtt has **no loss exit at all** until the breakeven trigger attaches the first stop. The planned Stop of 17.4 is still measured and used for sizing and Risk:Reward, but with the default settings no order carries it and Emtt does not close at it. Turning `Place stop loss` to `true` sends the plan's Stop with the order, and the broker then holds it from the first moment. This is the author's explicit choice, recorded here so it is never a surprise.
+
+**Spec notes.** Phase 8 supersedes, and only in the ways listed here: the no-order statements of 17.2, 17.10, 19.2 and 19.11 (orders exist from this phase); the "no new input" statements of every earlier phase (the five inputs of 21.3); two STATUS entries of section 7 — `No trade — news blackout, <event> in N min` and `No trade — <session> session blocked` — are **retired**, because news and sessions never block; the labeling rule of 19.4 (labels now come from real trades, 21.13); and the ticket grammar of 19.3 (a ticket gains a `trade` part, 21.13). Everything else of Phases 1–7 stands unchanged.
+
+### 21.1 Files
+
+| File | Change |
+|---|---|
+| `Include/Emtt/Emtt_Trade.mqh` | new — the pure decisions: safety gate, lot sizing, order construction, breakeven / partial / trailing distances, TP1 / TP2 revision, time exit, news and spread readings; no order call, no chart, no file |
+| `Include/Emtt/Emtt_TradeManager.mqh` | new — the live lifecycle: adopt / send / modify / close, the pending-order rules, the panel block values; the **only header** allowed to call trade functions |
+| `Include/Emtt/Emtt_LearnFile.mqh` | small change — the ticket grammar gains the `trade` part of 21.13 |
+| `Include/Emtt/Emtt_Learning.mqh` | small change — labels train from the trade part only (21.13) |
+| `Experts/Emtt.mq5` | `input group` + the three new inputs (21.3); the closed-candle management path, the per-tick floating P/L path, the panel block; `#property version` becomes `1.60`; the description gains `Phase 8: live trading - order, management, record.` |
+| `tests/phase8_reference.py` + `tests/test_phase8_reference.py` | new — MT5-free mirror of 21.2–21.14, same pattern as Phases 2–7; scope in 21.15 |
+| `tools/mql5_compile_smoke.py` | contract gains the two headers, the Phase 8 markers and the changed guards of 21.15 |
+| `README.md` | one Phase 8 paragraph |
+
+`Emtt_Dashboard.mqh`, `Emtt_DynamicParams.mqh`, `Emtt_Regime.mqh`, `Emtt_Supertrend.mqh`, `Emtt_SMC.mqh`, `Emtt_VolumeFlow.mqh`, `Emtt_MTF.mqh`, `Emtt_TradePlan.mqh` and `Emtt_Signal.mqh` are **not touched** and stay byte-identical. Sections 1–20 are not rewritten. No new chart-timeframe handle and no GlobalVariable is added.
+
+### 21.2 Rules for this phase
+
+1. **Real orders exist from this phase.** Only `Emtt_TradeManager.mqh` and `Experts/Emtt.mq5` may call trade functions; every other header keeps the Phase 6 no-order guard (21.15). `Emtt_Trade.mqh` stays pure.
+2. **Auto Trading OFF gates new orders only.** No order is sent while `InpAutoTrading = false`, and the header says `Auto Trading: OFF`. An already open position is still shown and still managed — breakeven, trailing, partial, time exit all keep working (6 rules 8, 9, 21).
+3. **One Emtt trade at a time** (6 rule 7): at most one pending order or one position carrying the magic number. Manual trades are ignored everywhere.
+4. **Closed candles decide; ticks only display.** Order attempts, management steps, TP revisions and exits happen at the newest closed candle. Per tick only the Price Row and Row 12's floating P/L refresh. The panel keeps its one-second timer.
+5. **The order uses the plan's own levels** (17.4). Entry at the market price → market order; Entry waiting at an order-block edge → pending limit order at that edge. Nothing is typed in.
+6. **No news or session blocking** (author's decisions). News only scales size and trail (21.10); the session only shows in Row 8 (21.11). The spread gate and the optional margin gate are the only order gates (21.4).
+7. **Management outlives the plan and the chart.** A position is managed whatever the later signal says and whatever timeframe the chart shows (6 rule 21). Only new signals and new orders follow the chart's timeframe rules.
+8. **Nothing is drawn.** Everything the trader sees is the panel; no chart line, arrow or rectangle (15.2 rule 1).
+9. **Determinism where possible.** The same closed candles and the same account state produce the same decisions. What the broker does with an order (fill price, reject, slippage) is recorded, never predicted.
+10. **ASCII source.** The two new headers contain only ASCII characters; glyphs and dashes are escapes, exactly as 17.2 rule 9 requires.
+11. **Nothing else changes.** No new panel row, no change to palette, font or width, no change to any approved module beyond the two documented Phase 7 edits of 21.1.
+
+### 21.3 Inputs — the final list
+
+`Magic number` stays alone on top; every other input sits under the `Auto Trading` group heading.
+
+```mql5
+input long InpMagicNumber = 20251007;   // Magic number
+
+input group "Auto Trading"
+input bool InpAutoTrading = false;      // Auto Trading ON/OFF
+input ENUM_EMTT_LOT_MODE InpLotMode = EMTT_LOT_AUTO;  // Lot size: Auto / Minimum
+input bool InpMarginCheck = false;      // Require free-margin check
+input bool InpPlaceStopLoss = false;    // Place stop loss with the order
+```
+
+- `ENUM_EMTT_LOT_MODE` has exactly two values: `EMTT_LOT_AUTO` (label `Auto`) and `EMTT_LOT_MINIMUM` (label `Minimum`).
+- Defaults are as the author decided: `false` / `Auto` / `false` / `false`.
+- Nothing else is exposed. Risk percent, news handling, trailing, breakeven, partials and the spread gate are internal, decided by the rows of 21.14.
+
+### 21.4 The safety gate — when an order may go out
+
+At the newest closed candle, with a BUY or SELL plan open (17.3, 19.5) and no Emtt trade already live, Emtt walks this list and reports the **first** failed check on STATUS:
+
+1. `InpAutoTrading = true`. Otherwise `No trade — Auto Trading OFF`.
+2. The terminal and the account allow trading (`TERMINAL_TRADE_ALLOWED`, `ACCOUNT_TRADE_ALLOWED`). Otherwise `No trade — terminal algo trading OFF.`
+3. The market is open (no MARKET CLOSED state). Otherwise the existing market-closed lines of 17.6.
+4. No Emtt pending order and no Emtt position exists (21.2 rule 3).
+5. **Spread gate:** the current spread is at most `2.0 ×` the average spread of the last 100 closed bars; while fewer than 20 bars exist the gate is skipped. Otherwise `No trade — spread too wide (N pts)` (section 7).
+6. **Margin gate, only when `InpMarginCheck = true`:** `OrderCalcMargin` for the calculated lots must fit the free margin. Otherwise `No trade — not enough margin`. `false` (the default) bypasses the check entirely — Emtt attempts the order and the broker's own answer applies.
+7. News and session: never checked here (21.2 rule 6).
+
+A blocked attempt is retried at each closed candle while its plan is open. The blocking line is journaled on a reason change, not every candle (21.13).
+
+### 21.5 Lot size — Auto and Minimum
+
+**Auto (default):** the size of gaeni's recorded sizing (§5.6, Normal profile), resolved with Emtt's own numbers:
+
+- Risk money = **1.0%** of the account balance (fixed internally, no input).
+- `lots = riskMoney ÷ (stopDistance ÷ tickSize × tickValue)` — `stopDistance` is `|Entry − Stop|` of the plan (it is used for sizing even when no stop is sent); `tickSize` and `tickValue` come from the symbol's trade properties.
+- × **confidence multiplier** from the adjusted Row 3 number: `≥ 90` → `1.5`, `80–89` → `1.2`, `70–79` → `1.0`, `60–69` → `0.7`.
+- × **news multiplier** of 21.10 (`1.0`, `0.75` or `0.5`).
+- Floored to the broker's volume step, then clamped to `[min lot, max lot]`; if the result is below the minimum, the minimum lot is used.
+
+**Minimum:** exactly the broker's minimum lot, no multipliers. The author's chosen fallback.
+
+The money amounts of Rows 4–6 (and Row 12) use the same tick math, in the account currency (6 rule 1).
+
+### 21.6 Placing the order
+
+- **Entry at the market price** (17.4): a market order at the current Ask / Bid.
+- **Entry at an order-block edge:** a **pending limit order** at the Entry price — BUY_LIMIT below the Ask, SELL_LIMIT above the Bid — with no expiry (GTC). It is guarded by the same gate; if by the attempt the level is already inside the market, Emtt sends the market order instead.
+- **Attached levels:** TP = the plan's Target, shown as **TP1**; SL = the plan's Stop **only when `InpPlaceStopLoss = true`**. `TP2` is never sent to the broker — Emtt manages it (21.7, 21.8).
+- **Cancelling a pending order:** the plan ends; the signal turns WAIT or the other side; the market closes; the EA is removed and reattached with no matching open plan in the learning file; or a new plan replaces it. Every cancel is journaled.
+- **Adoption:** at init, an existing Emtt pending order or position (found by magic number) is adopted and managed again (6 rule 8) — journaled as `Order adopted`.
+- An order attempt that the broker refuses gets `Order rejected — broker error <code>` (section 7) and is journaled; there is no retry loop inside the same candle.
+
+### 21.7 Managing the open position
+
+All steps happen at closed candles (21.2 rule 4), in this order.
+
+**Breakeven** — when the trade's profit reaches **`1.0 × ATR`** (gaeni's default trigger):
+- `InpPlaceStopLoss = false` → the first stop is **attached** at Entry (the author's Point A option 1: the stop appears at the breakeven trigger);
+- `InpPlaceStopLoss = true` → the existing stop is **moved** from the plan's Stop to Entry.
+- Journaled and shown in Row 10.
+
+**Partial close at TP1** — when a closed candle reaches TP1 (spread never added, 17.7): close **50%** of the volume at market (when the volume is too small to halve, the partial is skipped), move the stop to Entry, set the remaining position's TP to TP2, and hand the rest to trailing. Journaled and shown.
+
+**Trailing** — gaeni §5.1 Layers 1–3, one method at a time, updated at closed candles only:
+
+- **Base distance by timeframe:** M5 `1.0 × ATR`, M15 `1.5 × ATR`, M30 `2.0 × ATR`.
+- **Method by profit fraction** `f = (price − Entry) ÷ (TP1 − Entry)` for BUY, mirrored for SELL, clamped below at 0: `f < 0.50` → **ATR trail** (distance = base); `0.50 ≤ f < 0.80` → **Chandelier** (`highest high since entry − 2.5 × ATR` for BUY, mirrored); `f ≥ 0.80` → **Fractal** (the newest confirmed swing low − `0.5 × ATR`, 13.3).
+- **Context multipliers:** confidence `1.0 / 0.9 / 0.7 / 0.5` (gaeni's bands: 85+ / 70–84 / 55–69 / <55, read on the adjusted Row 3 number); regime `Trending 1.0 / Transition 0.8 / Volatile 1.3 / Ranging 0.6`; news `1.5` inside a high-impact window (21.10). gaeni's divergence multiplier is **not built** — Emtt has no tick-level CVD.
+- **Final distance** = method distance × the three multipliers. The stop is placed that distance behind the current price, and **only ever moves in the trade's favour, never backwards**.
+- Trailing starts at the breakeven moment; before that the stop (if any) stays at the plan's Stop.
+- **Protect word** (6 rule 5, shown only in Row 14): `Original` before any stop exists; `Breakeven` after the breakeven step; then `ATR` / `Chandelier` / `Fractal` for the active method.
+
+### 21.8 TP1 and TP2 while the trade lives
+
+The candidate levels are re-derived at each closed candle from the same sources as 17.4's Target (fair value gap near edge, pool, POC, VAH, VAL, naked POC), nearest first, on the trade side of the current price. The trade plan itself never changes; this section governs the live trade only.
+
+- **TP1 never moves further away.** It may move to a **nearer** candidate that still meets 17.5's minimum Risk:Reward from Entry — progress locks in sooner — and it snaps to the nearest candidate beyond the current price when the adjusted confidence falls below `bar − 5` while the trade is in profit.
+- **TP2 extends** only while momentum stays with the trade (Supertrend direction with it, the flow view not opposing, adjusted number ≥ `bar − 5`) to the newest further candidate; it **contracts** to the nearest candidate beyond TP1 when momentum weakens or after TP1 is hit.
+- **Invariants at all times:** for BUY `Entry < TP1 < TP2` (mirrored for SELL); neither level ever sits at or beyond the current price on the wrong side; with no second candidate TP2 shows `--`.
+- Every revision is journaled and the broker's TP is updated to match (TP1 before the partial close, TP2 after).
+
+### 21.9 Time exit — the author's rule
+
+At each closed candle, when the trade's age exceeds the plan's **Expected Duration upper bound**:
+
+- **TP1 already hit, or the trade is in profit** → close the remainder at market; journaled; the trade is recorded (21.13).
+- **Not in profit (≤ 0 points)** → **never close at a loss**: the trade keeps running; STATUS reads `Holding — past expected duration, not in profit yet.`; re-checked at every closed candle, journaled on the state change only.
+
+With `InpPlaceStopLoss = true`, the broker's stop can still close the trade at a loss — that is the attached stop, not this rule.
+
+### 21.10 News — always soft, never a block
+
+- Emtt reads the MT5 economic calendar for the symbol's own currencies at each closed candle; the window is **30 minutes before → 30 after** each event.
+- **High impact** → new-order size × **0.5**, trailing distance × **1.5** while the window is open. **Medium impact** → size × **0.75**. **Low impact** → ignored. The strongest multiplier wins when windows overlap.
+- A window never blocks, never cancels and never closes: an open trade is managed normally; the multipliers apply to new orders and to the trail.
+- STATUS note while a window is open: `News — <event> in N min (high impact), size 0.5x.`
+- If the calendar cannot be read (disabled or no data), there is no effect and the fact is journaled once per session.
+
+### 21.11 Sessions — no blocking
+
+Autotrade runs in every session, exactly as it would at any other hour (author's decision). The session name stays Row 8's job (9.2 item 7), and 9.2.3's volatility / regime tables already tighten management where the market is thin. Section 7's session-blocked line is retired.
+
+### 21.12 Panel wiring
+
+The layout does not change: same rows, same width, same font, same palette, and no new row (6 rule 11).
+
+- **Rows 11–14 (LIVE TRADE block)** appear while Emtt holds a position (6 rule 8; a pending order alone does not open the block — Row 10 carries it):
+  - Row 11 — `Ticket: <n> | BUY 0.50 lots @ 1.08450` (side and lots as filled).
+  - Row 12 — `Floating P/L: +$44.00  (+88 pts)`, coloured (rule 17): the profit colour at or above zero, the loss colour below.
+  - Row 13 — `Live SL: <price> (<N> pts) | TP1: <price> TP2: <price or -->`; the stop distance is measured from the current price (rule 3); before a stop exists `Live SL: -- (-- pts)`.
+  - Row 14 — `Protect: <word> | Age: HH:MM / ~<duration>`; the age runs from the fill, the duration is the plan's Expected Duration range.
+  - The block ends when the position closes; the separator above it is hidden with it.
+- **Rows 4–6 money parts** show real amounts while Emtt holds a position (from its own lots, 21.5); otherwise they stay `--` (17.6).
+- **Header** — unchanged; `Auto Trading: ON/OFF` follows the input (6 rule 9).
+- **Row 10 (STATUS) precedence:** rule 19 red message → loading history → MARKET CLOSED → **fresh trade events** (`TP1 hit — 50% closed, stop at breakeven.` · `Breakeven — stop at entry, trailing active.` · `Trailing — stop at <price>, +N pts locked.` · `Position closed — <±amount>. Scanning for the next setup.`) → **time-exit hold line** → **news note** → **gate lines of section 7** (`No trade — Auto Trading OFF` · `No trade — terminal algo trading OFF.` · `No trade — spread too wide (N pts)` · `No trade — not enough margin` · `Order rejected — broker error <code>`) → **live-trade lines** (`Signal active — pending order at <entry>, waiting.` · `Signal active — position open, managing.`) → the signal lines of 17.6 → the Phase 3–5 event lines → the terminal line.
+- The journal lines of 21.13 are the record; the panel only ever shows the lines listed here.
+
+### 21.13 Determinism, state, journal and the learning record
+
+- **State.** The EA holds the plan (17.7 / 19.6), the identifiers of its pending order and position, and the trade-management counters in memory. The order and position themselves live at the broker and are re-found by magic number at init (21.6).
+- **Ticket grammar extension (supersedes 19.3).** A ticket that became a trade gains one part: ` | trade filled <time> | trade closed <time> | net <points> pts`. The paper fields of 19.3 stay as they are.
+- **Learning labels (supersedes 19.4).** Only tickets with a `trade` part train: `net > 0` = win (`1`), `net < 0` = loss (`0`), `net = 0` = neither. A plan that never became a trade stays in the file and in the counts but never trains. The lesson is real, never paper.
+- **File writes.** The four events of 19.3, plus order filled and position closed.
+- **Journal** — the existing `PrintFormat` channel, shape `Emtt | <what> | <detail> | bar <time>`, on state changes only:
+  - `Emtt | Order BUY | market | lots 0.42 (auto: risk 1.0%, conf 82%, news 1.0) | entry 1.08450 (order block edge) | stop 1.08280 (soft) | TP1 1.09120 | TP2 1.09450 | RR 1:3.9 | spread 2 pts | bar 2026.10.11 09:00`
+  - `Emtt | Order BUY | pending limit 1.08450 | lots 0.42 | GTC | bar 2026.10.11 09:00`
+  - `Emtt | Order filled | ticket 48217291 | 1.08450 | bar 2026.10.11 09:15`
+  - `Emtt | Order rejected | broker error 10016 | lots 0.42 | bar 2026.10.11 09:00`
+  - `Emtt | Pending cancelled | signal changed | bar 2026.10.11 10:00`
+  - `Emtt | Breakeven attached | stop 1.08450 | trigger +1.0 ATR | bar 2026.10.11 10:30`
+  - `Emtt | TP1 hit | 50% closed | stop to 1.08450 | bar 2026.10.11 12:00`
+  - `Emtt | Trailing updated | Chandelier | stop 1.08650 (2.5 ATR x1.0) | +32 pts locked | bar 2026.10.11 12:15`
+  - `Emtt | TP1 revised | 1.09120 -> 1.09080 (nearer fair value gap) | bar 2026.10.11 12:30`
+  - `Emtt | Time exit | past ~2-4h, in profit +44 pts | closed at market | bar 2026.10.11 13:00`
+  - `Emtt | Holding past expected duration | not in profit (+0 pts) | bar 2026.10.11 13:00`
+  - `Emtt | News | NFP in 15 min (high) | size 0.5x | bar 2026.10.11 13:15`
+  - `Emtt | Position closed | +670 pts (+$44.00) | 12 candles | bar 2026.10.11 14:00`
+  - `Emtt | Order adopted | pending 48217291 found on attach | bar 2026.10.11 14:30`
+- Never journaled: a repeated state, a trailing value that did not change, and any candle where nothing changed (17.8's discipline).
+
+### 21.14 Parameter rows Phase 8 adds to the table of 9.2.3
+
+Every number in Phase 8 is a named row here. None is a lookback, so Layer 2 scales none of them; the trailing base is timeframe-shaped **by design**, like the HTF mapping of 15.8. And now the frozen rule of 9.2.3 is real: while a position is open, the management numbers in effect at entry stay frozen until it closes.
+
+| Row | Class | Layer 1 standard (every symbol class) | Layer 3 volatility (Low / Normal / High) | Layer 4 regime (four moods) |
+|---|---|---|---|---|
+| a. Risk per trade | Management | `1.0%` of balance | `1.0%` in all three | `1.0%` in all four |
+| b. Confidence size multipliers (90+ / 80–89 / 70–79 / 60–69) | Management | `1.5 / 1.2 / 1.0 / 0.7` | the same | the same |
+| c. News size multipliers (high / medium) | Management | `0.5 / 0.75` | the same | the same |
+| d. News window | Strictness | `30` min before and after | the same | the same |
+| e. Spread gate | Strictness | `2.0 ×` the 100-bar average spread, skipped below `20` samples | the same | the same |
+| f. Breakeven trigger | Management | `1.0 × ATR` | the same | the same |
+| g. Partial close at TP1 | Management | `50%` | the same | the same |
+| h. Trailing base | Management | M5 `1.0` · M15 `1.5` · M30 `2.0 × ATR` (by chart timeframe by design) | the same | the same |
+| i. Trailing method band | Management | ATR `< 0.50` · Chandelier `0.50–0.80` · Fractal `≥ 0.80` of profit fraction `f` | the same | the same |
+| j. Chandelier multiple | Management | `2.5 × ATR` | the same | the same |
+| k. Fractal buffer | Management | `0.5 × ATR` beyond the confirmed swing | the same | the same |
+| l. Trailing context multipliers — confidence (85+ / 70–84 / 55–69 / <55) | Management | `1.0 / 0.9 / 0.7 / 0.5` | the same | the same |
+| m. Trailing context multipliers — regime | Management | `Trending 1.0 / Transition 0.8 / Volatile 1.3 / Ranging 0.6` | the same | the same |
+| n. Trailing context multiplier — news | Management | `1.5` inside a high-impact window | the same | the same |
+| o. Time exit | Strictness | close at market past the duration upper bound **only** when TP1 was hit or the trade is in profit | the same | the same |
+
+- **Guard rail (9.2.3):** management rows are read at entry and frozen while the position lives; the two-closed-candle pause applies to their bucket changes between trades. The confidence multiplier is read from the adjusted number of 19.5.
+- **Required history:** no new gate. The 302 / 377 / 402 gate of 15.11 already covers every reading; the calendar needs no history.
+
+### 21.15 Tests, gates and guards
+
+`tests/phase8_reference.py` mirrors 21.2–21.14, and `tests/test_phase8_reference.py` asserts, without MT5:
+- the gate: each check in order, the first-failure line, Auto Trading OFF with a live position still managed, the spread gate bands and its 20-sample skip, the margin gate both ways (bypass when false);
+- sizing: the Auto formula, each confidence band, each news multiplier, floor to step, clamp to min / max, the below-minimum case, the Minimum mode, and the money amount of Rows 4–6;
+- order construction: market vs pending-limit choice, the level tucked inside the market, the SL attached only when the input is true, TP = TP1 always, TP2 never sent;
+- management: the breakeven attach and the breakeven move, the partial close at TP1 including the too-small volume case, the trailing distance for each method and each multiplier set, and the never-backwards rule;
+- TP1 / TP2: each revision direction, the invariants (`Entry < TP1 < TP2`, wrong-side refusals), the confidence snap, the momentum extend and contract, `--` when no second candidate;
+- time exit: each case of 21.9, including the never-close-at-loss hold and the state-change journal;
+- news: the window edges, each impact multiplier, overlap resolution, the calendar-unavailable path;
+- the record: the ticket `trade` part round-trip, the label source (win / loss / neither / never-trained), the file-write events;
+- the panel: every status string, the precedence order, the Protect words, the LIVE TRADE block values and money amounts.
+
+`tools/mql5_compile_smoke.py` gains the two headers, the markers `EMTT_TRADE_RISK 1.0`, `EMTT_TRADE_BE_ATR 1.0`, `EMTT_TRADE_PARTIAL_PCT 50.0`, `EMTT_TRAIL_BASE_M5 1.0`, `EMTT_TRAIL_BASE_M15 1.5`, `EMTT_TRAIL_BASE_M30 2.0`, `EMTT_TRAIL_CHANDELIER 2.5`, `EMTT_TRAIL_FRACTAL_BUFFER 0.5`, `EMTT_TRAIL_PHASE_HI 0.50`, `EMTT_TRAIL_PHASE_TOP 0.80`, `EMTT_TRADE_SPREAD_MULT 2.0`, `EMTT_TRADE_SPREAD_SAMPLES 20`, `EMTT_NEWS_WINDOW_MIN 30`, `EMTT_NEWS_SIZE_HIGH 0.5`, `EMTT_NEWS_SIZE_MED 0.75`, `EMTT_NEWS_TRAIL_MULT 1.5`, the five input names with their defaults, the `input group "Auto Trading"` line, the include order `Emtt_Trade.mqh` then `Emtt_TradeManager.mqh` after the learning includes, and exactly one `SEmttTradeState g_trade;`. It also carries the Phase 1 dashboard digest and every Phase 2–7 marker, unchanged.
+
+Guards:
+- the chart-drawing guard of 15.2 rule 1 (the Phase 4 forbidden list), applied to both new headers and the EA;
+- the **trade-scope guard** (the Phase 6 no-order guard, re-scoped): every source except `Emtt_TradeManager.mqh` and `Experts/Emtt.mq5` still rejects the order tokens of 17.9; those two files are the only ones allowed to use them, and `Emtt_Trade.mqh` keeps the full no-order guard as a pure-decision header;
+- the **ASCII guard** of 17.9, applied to both new headers;
+- the **file guard** of 19.10: still only the learning file; no `GlobalVariable*`, no extra file path.
+
+### 21.16 Not in this phase
+
+No tick-level CVD or divergence detection; no trailing Layer-4 override input and no Chandelier / Fractal selector input; no alerts, sounds, push or email; no CSV export; no chart lines; no statistics panel; no parameter-optimization persistence (the last carried-forward item of 15.14, kept for the polish phase); no multiple positions, grids or hedging; no second symbol coordination; no change to any approved module beyond the two Phase 7 edits of 21.1.
+
+---
+
+## 22. Phase 8 — Done When
+
+**Status: SPEC WRITTEN (2026-10-11) — DECISIONS APPROVED; NOT YET BUILT.** Every bullet below must hold before the phase is called implemented. The portable bullets are proven by `python -m unittest discover -s tests -v` and `python tools/mql5_compile_smoke.py`; the live-terminal bullets are the author's to confirm on a real MT5 **demo** chart, exactly as sections 10, 12, 14, 16 and 18 were, and the status stamps of this section are appended only when they pass.
+
+- The nine Phase 1–6 sources are byte-identical; the two Phase 7 headers change only as 21.1 says; inputs are the five of 21.3 with the approved defaults; no new chart-timeframe handle and no GlobalVariable exists.
+- `Emtt_Trade.mqh` and `Emtt_TradeManager.mqh` are in the required-source set with every Phase 8 marker of 21.15, and the four guards hold — the trade-scope guard lets order tokens live **only** in the manager and the EA.
+- The gate, sizing, order construction, management, TP revision, time exit and news behaviour all match 21.4–21.10 exactly, including the never-backwards trail, the never-close-at-loss time exit, and the news multipliers that never block.
+- The ticket `trade` part and the real-outcome labels match 21.13; learning trains only on real trades.
+- `python tools/mql5_parser_check.py` exits `0` on the Phase 8 sources, negative control rejected first (Hard Rule 3), and the sha256 and node counts are recorded here at delivery, as in sections 8, 10, 12, 14, 16, 18 and 20.
+- On a live M15 **demo** chart with Auto Trading ON, the author confirms: (a) a plan with a block-edge entry appears at the broker as a pending limit, and one at market as a market order; (b) the LIVE TRADE block fills with ticket, lots, floating P/L, TP1 / TP2 and Protect / Age; (c) the Rows 4–6 money amounts match the broker's own figures; (d) at +1.0 ATR the first stop is attached (place-stop-loss off) or moved to entry (on), and Row 14 reads `Breakeven`; (e) at TP1 50% is closed, the stop is at entry, and the remaining TP becomes TP2; (f) the trailing stop only ever moves in the trade's favour and its Protect word follows the method; (g) a TP1 / TP2 revision appears in the journal and at the broker; (h) the time exit closes only in profit or after TP1, and a losing trade past its duration is held and journaled, never closed; (i) a high-impact event shows the news note and the half size is visible in the order line; (j) a second signal never opens a second position; (k) removing and re-attaching the EA adopts its pending order and position; (l) the learning file gains the `trade` parts and the panel counts follow real outcomes; (m) manual trades are ignored throughout; (n) on H1 no new signal or order appears while a live position is still fully managed (6 rule 21).
+- The header reads `Auto Trading: ON` on the demo run, and no order exists while the input is `false`.
