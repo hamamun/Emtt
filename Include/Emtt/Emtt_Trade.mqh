@@ -43,11 +43,12 @@
 #define EMTT_TRAIL_REGIME_VOLATILE      1.3
 #define EMTT_TRAIL_REGIME_RANGING       0.6
 
-// 21.3: the only two lot modes exposed to the user.
+// 21.3: the only two lot modes exposed to the user. The member comments are
+// the input labels MetaEditor shows for the dropdown (Auto / Minimum).
 enum ENUM_EMTT_LOT_MODE
   {
-   EMTT_LOT_AUTO=0,
-   EMTT_LOT_MINIMUM=1
+   EMTT_LOT_AUTO=0,     // Auto
+   EMTT_LOT_MINIMUM=1   // Minimum
   };
 
 enum EEmttTradeGateFailure
