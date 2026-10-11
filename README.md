@@ -114,9 +114,13 @@ order of 17.7, a candle that reached an end level ends the plan there, and a sta
 fallen out of the copied history ends it as `chart`. Row 3's number is the only reading that
 changes; Row 10 gains `Watching — learning NN% holds this one back.` checked before the first 17.6
 reason, the stay margin reads the adjusted number, and — per the author's 2026-10-11 decision — the
-Row 9 learning clause is journal only, because the panel revamp retired that row. Writes happen only
-at init-after-load, a plan start, an entry reach and a plan end; and the phase still places no order,
-draws nothing and adds no input, panel row, chart handle or GlobalVariable.
+Row 9 learning clause is journal only, because the panel revamp retired that row. The Phase 8 ticket
+extension adds broker fill/close times and signed net points; closed real trades train from net points,
+while plans that were only watched retain Phase 7's paper target/stop label.
+
+## Phase 8 — Live trading, management, and trade records (implemented)
+
+`Emtt_Trade.mqh` contains pure safety, sizing, order-plan, target, trailing, time-exit, and news decisions; `Emtt_TradeManager.mqh` is the broker-facing lifecycle owner. Auto Trading is grouped with the new lot mode, margin-check, and initial-stop inputs and defaults to OFF. When enabled, orders still require the ordered terminal/account/market/live-position/spread/margin checks; sessions and news never block. The manager adopts Emtt positions, manages breakeven, TP1 partials, TP1/TP2 revisions, one-way trailing and profit-only time exits on closed candles, while ticks refresh only display data. The panel uses the existing LIVE TRADE block and live status fields. Learning records attach fill/close times and net points: real completed trades use their net result, open trades stay unlabeled, and unfilled plans retain paper target/stop labels. Portable checks do not establish real-MT5 acceptance; that remains a separate demo-chart verification.
 
 Run the portable checks with:
 

@@ -17,7 +17,9 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "Experts" / "Emtt.mq5"
-INCLUDE_RE = re.compile(r'^\s*#\s*include\s*["<]([^">]+)[">]', re.MULTILINE)
+# Resolve only repo-relative quoted includes. MetaEditor owns angle-bracket
+# standard-library headers such as <Trade/Trade.mqh>.
+INCLUDE_RE = re.compile(r'^\s*#\s*include\s*"([^"]+)"', re.MULTILINE)
 
 
 def resolve_include_graph(entry: Path) -> list[Path]:
@@ -143,7 +145,8 @@ def check_guards(path: Path) -> None:
         raise RuntimeError(f"unterminated preprocessor conditional in {path.relative_to(ROOT)}")
 
 
-RATES_VOLUME_MEMBER_RE = re.compile(r"\.\s*volume\b(?!\w)")
+RATES_VARIABLE_RE = re.compile(r"\bMqlRates\s*&?\s*([A-Za-z_]\w*)")
+RATES_VOLUME_MEMBER_RE = re.compile(r"\b([A-Za-z_]\w*)\s*\.\s*volume\b(?!\w)")
 
 
 def check_mqlrates_volume(paths: list[Path]) -> None:
@@ -160,7 +163,12 @@ def check_mqlrates_volume(paths: list[Path]) -> None:
         if path.suffix.lower() not in (".mqh", ".mq5"):
             continue
         source = strip_comments_and_strings(path.read_text(encoding="utf-8"))
-        match = RATES_VOLUME_MEMBER_RE.search(source)
+        rates_names = {match.group(1) for match in RATES_VARIABLE_RE.finditer(source)}
+        match = None
+        for member in RATES_VOLUME_MEMBER_RE.finditer(source):
+            if member.group(1) in rates_names:
+                match = member
+                break
         if match:
             line = source.count("\n", 0, match.start()) + 1
             raise RuntimeError(
@@ -185,6 +193,8 @@ def check_contract(paths: list[Path]) -> None:
         "Include/Emtt/Emtt_Summary.mqh",
         "Include/Emtt/Emtt_LearnFile.mqh",
         "Include/Emtt/Emtt_Learning.mqh",
+        "Include/Emtt/Emtt_Trade.mqh",
+        "Include/Emtt/Emtt_TradeManager.mqh",
     }
     missing = required - relative
     if missing:
@@ -545,7 +555,7 @@ def check_contract(paths: list[Path]) -> None:
         (ea, r"EmttLearnJournalResumed\(", "Learning resumed journal line"),
         (ea, r"EmttLearnFileSave\(g_learning\.file,", "the four write events save the record"),
         (ea, r'#property version\s+"1\.60"', "Phase 7 version stamp"),
-        (ea, r'#property description "Phase 7: self-learning signal filter \(no orders\)\."',
+        (ea, r'#property description "Phase 7: self-learning signal filter\."',
          "Phase 7 description line"),
     )
     for source, pattern, description in phase7_markers:
@@ -640,6 +650,121 @@ def check_contract(paths: list[Path]) -> None:
         )
 
 
+
+    #--- Phase 8 (21.15) -----------------------------------------------
+    trade_path = ROOT / "Include" / "Emtt" / "Emtt_Trade.mqh"
+    manager_path = ROOT / "Include" / "Emtt" / "Emtt_TradeManager.mqh"
+    trade = trade_path.read_text(encoding="utf-8")
+    manager = manager_path.read_text(encoding="utf-8")
+    phase8_markers = (
+        (trade, r"EMTT_TRADE_RISK\s+1\.0", "1.0 percent fixed risk"),
+        (trade, r"EMTT_TRADE_BE_ATR\s+1\.0", "breakeven at 1.0 ATR"),
+        (trade, r"EMTT_TRADE_PARTIAL_PCT\s+50\.0", "50 percent TP1 partial"),
+        (trade, r"EMTT_TRAIL_BASE_M5\s+1\.0", "M5 trailing base"),
+        (trade, r"EMTT_TRAIL_BASE_M15\s+1\.5", "M15 trailing base"),
+        (trade, r"EMTT_TRAIL_BASE_M30\s+2\.0", "M30 trailing base"),
+        (trade, r"EMTT_TRAIL_CHANDELIER\s+2\.5", "2.5 ATR Chandelier"),
+        (trade, r"EMTT_TRAIL_FRACTAL_BUFFER\s+0\.5", "0.5 ATR Fractal buffer"),
+        (trade, r"EMTT_TRAIL_PHASE_HI\s+0\.50", "ATR/Chandelier phase boundary"),
+        (trade, r"EMTT_TRAIL_PHASE_TOP\s+0\.80", "Chandelier/Fractal phase boundary"),
+        (trade, r"EMTT_TRADE_SPREAD_MULT\s+2\.0", "2.0 average-spread multiplier"),
+        (trade, r"EMTT_TRADE_SPREAD_SAMPLES\s+20", "20-sample spread skip"),
+        (trade, r"EMTT_NEWS_WINDOW_MIN\s+30", "30-minute before/after news window"),
+        (trade, r"EMTT_NEWS_SIZE_HIGH\s+0\.5", "high-impact half size"),
+        (trade, r"EMTT_NEWS_SIZE_MED\s+0\.75", "medium-impact 0.75 size"),
+        (trade, r"EMTT_NEWS_TRAIL_MULT\s+1\.5", "high-impact 1.5 trail multiplier"),
+        (ea, r"input long InpMagicNumber\s*=\s*20251007", "magic input and default"),
+        (ea, r'input group\s+"Auto Trading"', "Auto Trading input group"),
+        (ea, r"input bool InpAutoTrading\s*=\s*false", "watch-only default"),
+        (ea, r"input ENUM_EMTT_LOT_MODE InpLotMode\s*=\s*EMTT_LOT_AUTO", "Auto lot-size default"),
+        (ea, r"input bool InpMarginCheck\s*=\s*false", "margin-check bypass default"),
+        (ea, r"input bool InpPlaceStopLoss\s*=\s*false", "initial stop-loss default"),
+        (ea, r'#include "\.\./Include/Emtt/Emtt_Trade\.mqh"', "quoted pure-trade include"),
+        (ea, r'#include "\.\./Include/Emtt/Emtt_TradeManager\.mqh"', "quoted trade-manager include"),
+        (ea, r"SEmttTradeState\s+g_trade;", "exactly one trade manager state"),
+        (trade, r"EmttTradeGateFirstFailure\(", "ordered safety gate"),
+        (trade, r"EmttTradeResolveLots\(", "Auto/Minimum lot sizing"),
+        (trade, r"EmttTradeBuildOrder\(", "market/pending order construction"),
+        (trade, r"EmttTradeTrailCalculate\(", "trailing distance and context"),
+        (trade, r"EmttTradeReviseTargets\(", "TP1/TP2 revisions"),
+        (trade, r"EmttTradeTimeExitClose\(", "profit-only time exit"),
+        (manager, r"CalendarValueHistory\(", "MT5 economic calendar"),
+        (manager, r"PositionClosePartial\(", "TP1 partial close"),
+        (manager, r"EmttTradeManagerObserve\(", "broker adoption/fill/close lifecycle"),
+        (manager, r"EmttTradeManagerFillPanel\(", "live block panel wiring"),
+        (phase7_learn_file,
+         r"trade filled|trade closed|tradeNetPoints", "trade ticket grammar"),
+        (phase7_learning, r"ticket\.tradeNetPoints", "real-net learning label"),
+        (ea, r'#property version\s+"1\.60"', "Phase 8 version stamp"),
+        (ea, r'#property description "Phase 8: live trading - order, management, record\."',
+         "Phase 8 description line"),
+    )
+    for source, pattern, description in phase8_markers:
+        if not re.search(pattern, source):
+            raise RuntimeError(f"missing Phase-8 rule: {description}")
+    if len(re.findall(r"\bSEmttTradeState\s+g_trade\s*;", ea)) != 1:
+        raise RuntimeError("Phase 8 must declare exactly one EA trade state instance")
+    if not (ea.find("Emtt_Learning.mqh") < ea.find("Emtt_Trade.mqh") <
+            ea.find("Emtt_TradeManager.mqh")):
+        raise RuntimeError("Phase-8 trade includes must follow learning, pure trade first")
+    if not (ea.find("Emtt_LearnFile.mqh") < ea.find("Emtt_Learning.mqh")):
+        raise RuntimeError("Phase-8 trade includes must follow both learning headers")
+
+    # The trade-scope guard is the Phase-6 no-order list re-scoped for
+    # 21.2: only the broker manager and EA are allowed to contain calls.
+    phase8_order_tokens = forbidden_orders + (r"\bOrderCalcMargin\b",)
+    allowed_trade_scope = {
+        "Experts/Emtt.mq5",
+        "Include/Emtt/Emtt_TradeManager.mqh",
+    }
+    for path in paths:
+        rel = path.relative_to(ROOT).as_posix()
+        if rel in allowed_trade_scope:
+            continue
+        code = strip_comments_and_strings(path.read_text(encoding="utf-8"))
+        for pattern in phase8_order_tokens:
+            if re.search(pattern, code):
+                raise RuntimeError(
+                    f"Phase-8 trade-scope violation in {rel}: {pattern}"
+                )
+    # The pure-decision header remains subject to the full no-order guard.
+    pure_code = strip_comments_and_strings(trade)
+    for pattern in phase8_order_tokens:
+        if re.search(pattern, pure_code):
+            raise RuntimeError(f"Phase-8 pure-trade header contains order token: {pattern}")
+
+    for source, name in ((trade, "trade"), (manager, "trade-manager")):
+        for pattern in forbidden_smc:
+            if re.search(pattern, source):
+                raise RuntimeError(
+                    f"Phase-8 {name} source contains forbidden chart drawing token: {pattern}"
+                )
+    for path, name in ((trade_path, "trade"), (manager_path, "trade-manager")):
+        raw = path.read_bytes()
+        for index, byte in enumerate(raw):
+            if byte > 0x7F:
+                line = raw.count(b"\n", 0, index) + 1
+                raise RuntimeError(
+                    f"Phase-8 {name} header is not ASCII-only: byte 0x{byte:02X} at line {line}"
+                )
+
+    # 21.15 keeps the Phase-7 file boundary and introduces no extra path,
+    # global variable or direct file access in either trade header.
+    forbidden_phase8_files = (
+        r"\bGlobalVariable\w*\s*\(", r"\bFileOpen\s*\(",
+        r"\bFileWrite\w*\s*\(", r"\bFileRead\w*\s*\(",
+        r"\bFileClose\s*\(", r"\bFileMove\s*\(",
+        r"\bFileDelete\s*\(", r"\bFolderCreate\s*\(",
+        r"\bFolderDelete\s*\(", r"\bFileCopy\s*\(",
+        r"\bFILE_COMMON\b",
+    )
+    for source, name in ((trade, "trade"), (manager, "trade-manager")):
+        code = strip_comments_and_strings(source)
+        for pattern in forbidden_phase8_files:
+            if re.search(pattern, code):
+                raise RuntimeError(
+                    f"Phase-8 {name} source breaks the learning-file boundary: {pattern}"
+                )
 
 
 def run_metaeditor(paths: list[Path]) -> None:

@@ -94,8 +94,11 @@ struct SEmttLearnTicket
    int      result;         // EEmttLearnResult, NONE while open
    bool     shared;         // 17.7 marked the ending candle shared
    double   exitPrice;
-   int      points;         // signed whole points
+   int      points;         // signed paper-result points
    int      candles;
+   datetime tradeFilledTime; // 21.13: zero until the plan became a trade
+   datetime tradeClosedTime; // 21.13: zero while the broker position lives
+   int      tradeNetPoints;  // real signed points, includes realized costs
    long     startSequence;  // memory only, never written (19.3)
   };
 
@@ -151,6 +154,9 @@ void EmttLearnTicketReset(SEmttLearnTicket &ticket)
    ticket.exitPrice=0.0;
    ticket.points=0;
    ticket.candles=0;
+   ticket.tradeFilledTime=0;
+   ticket.tradeClosedTime=0;
+   ticket.tradeNetPoints=0;
    ticket.startSequence=-1;
   }
 
@@ -374,6 +380,22 @@ bool EmttLearnPartInt(const string part,const string key,int &value)
    return true;
   }
 
+bool EmttLearnPartNet(const string part,int &value)
+  {
+   string tail="";
+   if(!EmttLearnPartTail(part,"net",tail) || StringLen(tail)<5)
+      return false;
+   const int length=StringLen(tail);
+   if(StringSubstr(tail,length-4)!=" pts")
+      return false;
+   const string number=StringSubstr(tail,0,length-4);
+   int parsed=0;
+   if(!EmttLearnPartInt("net "+number,"net",parsed))
+      return false;
+   value=parsed;
+   return true;
+  }
+
 bool EmttLearnPartPrice(const string part,const string key,double &value)
   {
    string tail="";
@@ -426,6 +448,14 @@ string EmttLearnTicketLine(const SEmttLearnTicket &ticket,const int digits)
       line+=" | exit "+DoubleToString(ticket.exitPrice,digits)+
             " | points "+IntegerToString(ticket.points)+
             " | candles "+IntegerToString(ticket.candles);
+     }
+   if(ticket.tradeFilledTime>0)
+     {
+      line+=" | trade filled "+EmttLearnTimeText(ticket.tradeFilledTime);
+      if(ticket.tradeClosedTime>0)
+         line+=" | trade closed "+EmttLearnTimeText(ticket.tradeClosedTime)+
+               " | net "+(ticket.tradeNetPoints>=0 ? "+" : "")+
+               IntegerToString(ticket.tradeNetPoints)+" pts";
      }
    return line;
   }
@@ -527,10 +557,31 @@ bool EmttLearnParseTicketLine(const string line,const int digits,
    ticket.state=EmttLearnStateFromWord(tail);
    if(ticket.state<0)
       return false;
+   bool hasTradeFill=false;
+   bool hasTradeClose=false;
+   bool hasTradeNet=false;
    for(int i=13;i<count;i++)
      {
       if(EmttLearnPartTime(parts[i],"reached",ticket.reachedBarTime))
          continue;
+      if(EmttLearnPartTime(parts[i],"trade filled",ticket.tradeFilledTime))
+        {
+         if(hasTradeFill) return false;
+         hasTradeFill=true;
+         continue;
+        }
+      if(EmttLearnPartTime(parts[i],"trade closed",ticket.tradeClosedTime))
+        {
+         if(hasTradeClose) return false;
+         hasTradeClose=true;
+         continue;
+        }
+      if(EmttLearnPartNet(parts[i],ticket.tradeNetPoints))
+        {
+         if(hasTradeNet) return false;
+         hasTradeNet=true;
+         continue;
+        }
       if(EmttLearnPartTail(parts[i],"result",tail))
         {
          string words[];
@@ -556,6 +607,10 @@ bool EmttLearnParseTicketLine(const string line,const int digits,
          continue;
       return false;
      }
+   if(hasTradeClose!=hasTradeNet || (hasTradeClose && !hasTradeFill) ||
+      (hasTradeFill && ticket.tradeFilledTime<=0) ||
+      (!hasTradeFill && ticket.tradeClosedTime>0))
+      return false;
    if(ticket.state==EMTT_LEARN_STATE_CLOSED &&
       ticket.result==EMTT_LEARN_RESULT_NONE)
       return false;
@@ -579,13 +634,29 @@ void EmttLearnFileRecomputeCounts(SEmttLearnFileState &state)
    state.losses=0;
    for(int i=0;i<state.ticketCount;i++)
      {
-      const int result=state.tickets[i].result;
-      if(result==EMTT_LEARN_RESULT_TARGET)
+      const SEmttLearnTicket ticket=state.tickets[i];
+      if(ticket.tradeFilledTime>0)
+        {
+         if(ticket.tradeClosedTime<=0)
+            continue;
+         if(ticket.tradeNetPoints>0)
+           {
+            state.labeled++;
+            state.wins++;
+           }
+         else if(ticket.tradeNetPoints<0)
+           {
+            state.labeled++;
+            state.losses++;
+           }
+         continue;
+        }
+      if(ticket.result==EMTT_LEARN_RESULT_TARGET)
         {
          state.labeled++;
          state.wins++;
         }
-      else if(result==EMTT_LEARN_RESULT_STOP)
+      else if(ticket.result==EMTT_LEARN_RESULT_STOP)
         {
          state.labeled++;
          state.losses++;
@@ -815,6 +886,54 @@ bool EmttLearnFileMarkReached(SEmttLearnFileState &state,const int slot,
       return false;
    state.tickets[slot].state=EMTT_LEARN_STATE_ACTIVE;
    state.tickets[slot].reachedBarTime=barTime;
+   return true;
+  }
+
+int EmttLearnFileFindPlan(const SEmttLearnFileState &state,
+                          const datetime startBarTime,const int side)
+  {
+   for(int i=state.ticketCount-1;i>=0;i--)
+      if(state.tickets[i].startBarTime==startBarTime &&
+         state.tickets[i].side==side)
+         return i;
+   return -1;
+  }
+
+int EmttLearnFileFindOpenTrade(const SEmttLearnFileState &state,
+                               const datetime filledTime,const int side)
+  {
+   for(int i=state.ticketCount-1;i>=0;i--)
+      if(state.tickets[i].tradeFilledTime>0 &&
+         state.tickets[i].tradeClosedTime==0 &&
+         state.tickets[i].side==side &&
+         (filledTime<=0 || state.tickets[i].tradeFilledTime==filledTime))
+         return i;
+   return -1;
+  }
+
+bool EmttLearnFileMarkTradeFilled(SEmttLearnFileState &state,const int slot,
+                                  const datetime filledTime)
+  {
+   if(slot<0 || slot>=state.ticketCount || filledTime<=0 ||
+      state.tickets[slot].tradeFilledTime>0 ||
+      state.tickets[slot].tradeClosedTime>0)
+      return false;
+   state.tickets[slot].tradeFilledTime=filledTime;
+   EmttLearnFileRecomputeCounts(state);
+   return true;
+  }
+
+bool EmttLearnFileMarkTradeClosed(SEmttLearnFileState &state,const int slot,
+                                  const datetime closedTime,
+                                  const int netPoints)
+  {
+   if(slot<0 || slot>=state.ticketCount || closedTime<=0 ||
+      state.tickets[slot].tradeFilledTime<=0 ||
+      state.tickets[slot].tradeClosedTime>0)
+      return false;
+   state.tickets[slot].tradeClosedTime=closedTime;
+   state.tickets[slot].tradeNetPoints=netPoints;
+   EmttLearnFileRecomputeCounts(state);
    return true;
   }
 
