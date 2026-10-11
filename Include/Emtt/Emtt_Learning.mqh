@@ -191,10 +191,21 @@ void EmttLearnFeaturesFromTicket(const SEmttLearnTicket &ticket,
                      ticket.mood,ticket.session,ticket.vol,x);
   }
 
-// 19.4: the ticket's label. A target is a win (1), a stop a loss (0);
-// every other result is neither and never trains.
+// 21.13: use the strongest evidence exactly once. A filled trade waits
+// for its broker-close net; it never falls back to a paper label. A ticket
+// without a trade retains Phase 7's target / stop paper outcome.
 int EmttLearnLabelOf(const SEmttLearnTicket &ticket)
   {
+   if(ticket.tradeFilledTime>0)
+     {
+      if(ticket.tradeClosedTime<=0)
+         return -1;
+      if(ticket.tradeNetPoints>0)
+         return 1;
+      if(ticket.tradeNetPoints<0)
+         return 0;
+      return -1;
+     }
    if(ticket.result==EMTT_LEARN_RESULT_TARGET)
       return 1;
    if(ticket.result==EMTT_LEARN_RESULT_STOP)

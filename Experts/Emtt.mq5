@@ -1,8 +1,9 @@
 //+------------------------------------------------------------------+
 //|                                                       Emtt.mq5   |
 //|                Emtt - MT5 Trading Expert Adviser                 |
-//| Phase 6: signal and trade plan (no orders)                      |
-//| Phase 7: self-learning signal filter (no orders)                |
+//| Phase 6: signal and trade plan                                    |
+//| Phase 7: self-learning signal filter                             |
+//| Phase 8: live trading - order, management, record                 |
 //|                Spec: Emtt.md | Author: Ham | Coder: Arena        |
 //+------------------------------------------------------------------+
 #property copyright   "Author: Ham | Coder: Arena"
@@ -11,7 +12,8 @@
 #property description "Emtt V1.0 - MT5 Trading Expert Adviser."
 #property description "Phase 5: closed-bar volume flow (VWAP, profile, CVD) and higher-timeframe agreement."
 #property description "Phase 6: signal and trade plan (no orders)."
-#property description "Phase 7: self-learning signal filter (no orders)."
+#property description "Phase 7: self-learning signal filter."
+#property description "Phase 8: live trading - order, management, record."
 #property description "Panel revamp: WHY removed, STATUS single-line, Summary Today/All-Time, dynamic width."
 #property description "Allowed analysis timeframes: M5 / M15 / M30 only."
 
@@ -27,9 +29,16 @@
 #include "../Include/Emtt/Emtt_Summary.mqh"
 #include "../Include/Emtt/Emtt_LearnFile.mqh"
 #include "../Include/Emtt/Emtt_Learning.mqh"
+#include "../Include/Emtt/Emtt_Trade.mqh"
+#include "../Include/Emtt/Emtt_TradeManager.mqh"
 
 input long InpMagicNumber=20251007;   // Magic number
-input bool InpAutoTrading=true;       // Auto Trading ON/OFF
+
+input group "Auto Trading"
+input bool InpAutoTrading=false;      // Auto Trading ON/OFF
+input ENUM_EMTT_LOT_MODE InpLotMode=EMTT_LOT_AUTO;  // Lot size: Auto / Minimum
+input bool InpMarginCheck=false;      // Require free-margin check
+input bool InpPlaceStopLoss=false;    // Place stop loss with the order
 
 //--- Chart / instrument context -------------------------------------
 string          g_symbol="";
@@ -78,6 +87,7 @@ SEmttMtfContext            g_mtfContext;
 SEmttSignalState           g_signal;
 SEmttSummaryState          g_summary;
 SEmttLearningState         g_learning;
+SEmttTradeState            g_trade;
 SEmttBrokerOffsetState     g_brokerOffset;
 SEmttRegimeMeasurements    g_snapshotMeasurements;
 EEmttRegime                g_snapshotRegime=EMTT_REGIME_UNKNOWN;
@@ -1074,6 +1084,7 @@ void EmttRefreshFoundation()
      {
       g_marketOpen=false;
       g_sessionName="--";
+      EmttTradeManagerRefresh();
       EmttSyncFrozenPositionContext();
       UpdatePanel();
       return;
@@ -1116,12 +1127,13 @@ void EmttRefreshFoundation()
          g_marketWasClosed=false;
      }
 
-   EmttSyncFrozenPositionContext();
    // 15.1: one poll per second - a bar-time comparison in front of the
    // panel refresh, never a measurement and never a tick handler.
    EmttMtfAdvance(g_mtf,g_mtfContext,g_symbol,g_assetClass,g_timeframe,
                   g_evaluatedBarSequence,g_supertrend.direction,g_smc.bias,
                   false,true);
+   EmttTradeManagerRefresh();
+   EmttSyncFrozenPositionContext();
    UpdatePanel();
   }
 
@@ -1425,6 +1437,271 @@ void EmttLearningRecordPlanEnd(const datetime barTime,const double barHigh,
      }
   }
 
+ENUM_TIMEFRAMES EmttLearningTradeTimeframe()
+  {
+   if(g_trade.recordTfName=="M5") return PERIOD_M5;
+   if(g_trade.recordTfName=="M15") return PERIOD_M15;
+   if(g_trade.recordTfName=="M30") return PERIOD_M30;
+   if(g_trade.tradeTimeframe!=PERIOD_CURRENT)
+      return g_trade.tradeTimeframe;
+   return g_timeframe;
+  }
+
+bool EmttLearningApplyTradeEvent(SEmttLearnFileState &file,
+                                 const bool closing,
+                                 const datetime eventTime)
+  {
+   int slot=EmttLearnFileFindPlan(file,g_trade.planStartBarTime,
+                                  g_trade.side);
+   const datetime fillMinute=(g_trade.filledAt>0 ?
+      StringToTime(EmttLearnTimeText(g_trade.filledAt)) : 0);
+   const datetime closeMinute=(g_trade.closedAt>0 ?
+      StringToTime(EmttLearnTimeText(g_trade.closedAt)) : 0);
+   if(slot<0 && fillMinute>0)
+      slot=EmttLearnFileFindOpenTrade(file,fillMinute,g_trade.side);
+   if(slot<0 || slot>=file.ticketCount ||
+      !file.tickets[slot].used)
+      return false;
+   if(fillMinute>0 && file.tickets[slot].tradeFilledTime==0)
+      EmttLearnFileMarkTradeFilled(file,slot,fillMinute);
+   if(closing && closeMinute>0 &&
+      file.tickets[slot].tradeClosedTime==0)
+      EmttLearnFileMarkTradeClosed(file,slot,closeMinute,
+                                   g_trade.closedNetPoints);
+   if(g_trade.filledAt>0 &&
+      file.tickets[slot].tradeFilledTime==0)
+      return false;
+   if(closing && g_trade.closedAt>0 &&
+      file.tickets[slot].tradeClosedTime==0)
+      return false;
+   return EmttLearnFileSave(file,eventTime);
+  }
+
+bool EmttLearningSaveTradeEvent(const bool closing)
+  {
+   const datetime eventTime=(closing ? g_trade.closedAt : g_trade.filledAt);
+   if(eventTime<=0 || g_trade.planStartBarTime<=0 || g_trade.side==0)
+      return false;
+   const ENUM_TIMEFRAMES timeframe=EmttLearningTradeTimeframe();
+   const string tfName=EmttLearnTfName(timeframe);
+   if(g_learning.file.loaded && g_learning.file.symbol==g_symbol &&
+      g_learning.file.tfName==tfName)
+      return EmttLearningApplyTradeEvent(g_learning.file,closing,eventTime);
+   SEmttLearnFileState file;
+   const int digits=(int)SymbolInfoInteger(g_symbol,SYMBOL_DIGITS);
+   EmttLearnFileLoad(file,g_symbol,timeframe,digits,eventTime);
+   if(!file.loaded || file.readOnly)
+      return false;
+   return EmttLearningApplyTradeEvent(file,closing,eventTime);
+  }
+
+void EmttLearningRecordTradeEvents()
+  {
+   if(g_trade.fillRecordPending && EmttLearningSaveTradeEvent(false))
+     {
+      EmttTradeManagerAcknowledgeFill(g_trade);
+      if(g_learning.file.tfName==g_trade.recordTfName)
+        {
+         g_learning.modelDirty=true;
+         g_learning.modelLabeled=0;
+        }
+     }
+   if(g_trade.closeRecordPending && EmttLearningSaveTradeEvent(true))
+     {
+      EmttTradeManagerAcknowledgeClose(g_trade);
+      if(g_learning.file.tfName==g_trade.recordTfName)
+        {
+         g_learning.modelDirty=true;
+         g_learning.modelLabeled=0;
+        }
+     }
+   if(g_trade.summaryOutcomePending)
+     {
+      if(g_trade.closedNetPoints>0)
+        {
+         if(g_summary.loaded && g_summary.symbol==g_symbol &&
+            g_summary.tfName==g_trade.recordTfName)
+            EmttSummaryOnWin(g_summary);
+         else
+           {
+            SEmttSummaryState summary;
+            EmttSummaryInit(summary,g_symbol,EmttLearningTradeTimeframe());
+            EmttSummaryOnWin(summary);
+           }
+        }
+      else if(g_trade.closedNetPoints<0)
+        {
+         if(g_summary.loaded && g_summary.symbol==g_symbol &&
+            g_summary.tfName==g_trade.recordTfName)
+            EmttSummaryOnLoss(g_summary);
+         else
+           {
+            SEmttSummaryState summary;
+            EmttSummaryInit(summary,g_symbol,EmttLearningTradeTimeframe());
+            EmttSummaryOnLoss(summary);
+           }
+        }
+      EmttTradeManagerAcknowledgeSummary(g_trade);
+     }
+  }
+
+void EmttLearningRecoverTradeContext()
+  {
+   if(!g_trade.positionOpen || g_trade.hasPlanContext ||
+      g_trade.recoveryScanned)
+      return;
+   const datetime fillMinute=(g_trade.filledAt>0 ?
+      StringToTime(EmttTradeManagerTimeText(g_trade.filledAt)) : 0);
+   if(g_learning.file.loaded && g_learning.file.symbol==g_symbol)
+     {
+      int slot=EmttLearnFileFindOpenTrade(g_learning.file,fillMinute,
+                                          g_trade.side);
+      if(slot<0 && fillMinute>0 && g_learning.file.openTicket>=0 &&
+         g_learning.file.openTicket<g_learning.file.ticketCount &&
+         g_learning.file.tickets[g_learning.file.openTicket].side==g_trade.side &&
+         g_learning.file.tickets[g_learning.file.openTicket].startBarTime<=fillMinute)
+         slot=g_learning.file.openTicket;
+      if(slot>=0)
+        {
+         const SEmttLearnTicket ticket=g_learning.file.tickets[slot];
+         const int atrPeriod=EmttMatrixField(
+            g_assetClass,(EEmttVolatility)ticket.vol,0);
+         EmttTradeManagerBindTicket(g_trade,ticket,
+                                    EmttLearningTradeTimeframe(),atrPeriod);
+         g_trade.recoveryScanned=true;
+         return;
+        }
+     }
+   const ENUM_TIMEFRAMES sources[3]={PERIOD_M5,PERIOD_M15,PERIOD_M30};
+   const int digits=(int)SymbolInfoInteger(g_symbol,SYMBOL_DIGITS);
+   for(int i=0;i<3;i++)
+     {
+      if(EmttLearnTfName(sources[i])==g_learning.file.tfName)
+         continue;
+      SEmttLearnFileState file;
+      EmttLearnFileLoad(file,g_symbol,sources[i],digits,g_trade.filledAt);
+      const int slot=EmttLearnFileFindOpenTrade(file,fillMinute,
+                                                 g_trade.side);
+      if(slot<0)
+         continue;
+      const SEmttLearnTicket ticket=file.tickets[slot];
+      const int atrPeriod=EmttMatrixField(
+         g_assetClass,(EEmttVolatility)ticket.vol,0);
+      EmttTradeManagerBindTicket(g_trade,ticket,sources[i],atrPeriod);
+      g_trade.recoveryScanned=true;
+      return;
+     }
+   g_trade.recoveryScanned=true;
+  }
+
+void EmttTradeManagerBuildRuntime(SEmttTradeRuntime &runtime)
+  {
+   runtime.symbol=g_symbol;
+   runtime.timeframe=g_timeframe;
+   runtime.magic=InpMagicNumber;
+   runtime.autoTrading=InpAutoTrading;
+   runtime.lotMode=(int)InpLotMode;
+   runtime.marginCheck=InpMarginCheck;
+   runtime.placeStopLoss=InpPlaceStopLoss;
+   runtime.terminalAllowed=(bool)TerminalInfoInteger(TERMINAL_TRADE_ALLOWED);
+   runtime.accountAllowed=(bool)AccountInfoInteger(ACCOUNT_TRADE_ALLOWED);
+   runtime.chartCompatible=TfAllowed();
+   runtime.learningLoaded=(runtime.chartCompatible &&
+      g_learning.file.loaded && g_learning.file.symbol==g_symbol &&
+      g_learning.file.tfName==EmttLearnTfName(g_timeframe));
+   runtime.sessionName=g_sessionName;
+   runtime.confidence=(g_signal.viewsReady ? g_signal.confidence : -1);
+   runtime.moodBar=(g_signal.viewsReady ? g_signal.moodBar :
+                    g_trade.entryMoodBar);
+   runtime.mood=(g_signal.viewsReady ? g_signal.mood :
+      (g_snapshotReady ? g_snapshotRegime : g_trade.entryMood));
+   runtime.volatility=(g_snapshotReady ? g_snapshotVolatility :
+                       g_trade.entryVolatility);
+   runtime.assetClass=g_assetClass;
+   runtime.atrPeriod=(g_dynamic.initialized ? g_dynamic.atrPeriod :
+      (g_trade.atrPeriod>0 ? g_trade.atrPeriod :
+       EmttMatrixField(g_assetClass,runtime.volatility,0)));
+   runtime.atr=0.0;
+   if(runtime.chartCompatible && g_dynamic.initialized &&
+      runtime.atrPeriod==g_dynamic.atrPeriod)
+      EmttCopyOne(EmttAtrHandle(runtime.atrPeriod),0,1,runtime.atr);
+   runtime.trendDirection=(g_supertrend.ready ? g_supertrend.direction : 0);
+   runtime.flowDirection=(g_volumeFlow.ready ?
+                          g_volumeFlow.flowDirection : 0);
+   runtime.viewsReady=(g_supertrend.ready && g_smc.ready &&
+                       g_volumeFlow.ready && g_mtf.ready);
+   runtime.barTime=iTime(g_symbol,g_timeframe,1);
+   if(runtime.barTime<=0)
+      runtime.barTime=g_lastClosedBarTime;
+   MqlTick tick;
+   if(SymbolInfoTick(g_symbol,tick))
+     {
+      runtime.bid=tick.bid;
+      runtime.ask=tick.ask;
+     }
+   else
+     {
+      runtime.bid=SymbolInfoDouble(g_symbol,SYMBOL_BID);
+      runtime.ask=SymbolInfoDouble(g_symbol,SYMBOL_ASK);
+     }
+   runtime.point=SymbolInfoDouble(g_symbol,SYMBOL_POINT);
+   runtime.digits=(int)SymbolInfoInteger(g_symbol,SYMBOL_DIGITS);
+   ENUM_TIMEFRAMES marketTf=(runtime.chartCompatible ? g_timeframe :
+                             g_trade.tradeTimeframe);
+   if(marketTf==PERIOD_CURRENT)
+      marketTf=g_timeframe;
+   const datetime now=(TimeTradeServer()>0 ? TimeTradeServer() :
+                                            TimeCurrent());
+   runtime.marketOpen=EmttMarketIsOpen(g_symbol,marketTf,now,
+                                       iTime(g_symbol,marketTf,0));
+  }
+
+void EmttTradeManagerRefresh()
+  {
+   SEmttTradeRuntime runtime;
+   EmttTradeManagerBuildRuntime(runtime);
+   EmttTradeManagerObserve(g_trade,runtime.barTime);
+   EmttLearningRecoverTradeContext();
+   EmttTradeManagerStep(g_trade,runtime,g_signal.plan,g_supertrend,g_smc,
+                        g_volumeFlow,g_learning.file);
+   EmttLearningRecordTradeEvents();
+  }
+
+void EmttTradeManagerPanelStatus(SEmttPanelData &data)
+  {
+   // Preserve rule-19 incompatible / loading / market-closed precedence.
+   if(!TfAllowed() || !g_snapshotReady || !g_marketOpen)
+      return;
+   datetime tradeBar=g_lastClosedBarTime;
+   if(g_trade.tradeTimeframe!=PERIOD_CURRENT)
+     {
+      const datetime lastTradeBar=iTime(g_symbol,g_trade.tradeTimeframe,1);
+      if(lastTradeBar>0)
+         tradeBar=lastTradeBar;
+     }
+   string status="";
+   if(g_trade.freshStatus!="" &&
+      g_trade.freshStatusBarTime==tradeBar)
+      status=g_trade.freshStatus;
+   else if(g_trade.holdStatus!="")
+      status=g_trade.holdStatus;
+   else if(g_trade.newsStatus!="")
+      status=g_trade.newsStatus;
+   else if(g_trade.gateStatus!="")
+      status=g_trade.gateStatus;
+   else if(g_trade.pendingOrder || g_trade.positionOpen)
+      status=g_trade.liveStatus;
+   if(status!="")
+     {
+      data.status=status;
+      if(StringFind(status,"No trade")>=0 ||
+         StringFind(status,"Order rejected")>=0 ||
+         StringFind(status,"Holding")>=0 ||
+         StringFind(status,"not allowed")>=0)
+         data.statusClr=EMTT_CLR_SELL;
+     }
+  }
+
 //+------------------------------------------------------------------+
 //| 19.7 / 17.8: the journal discipline the engine would run with a   |
 //| journalling call - state changes, plan events and WAIT reason     |
@@ -1684,11 +1961,39 @@ void EmttConsumeSignalEvents(const datetime barTime,const double barHigh,
                              const double barLow,const int spreadPts,
                              const double atr)
   {
+   // Resolve a broker fill before a paper plan end can be labeled; the
+   // real trade evidence then takes precedence without a later relabel.
+   if(g_trade.initialized)
+     {
+      EmttTradeManagerObserve(g_trade,barTime);
+      EmttLearningRecoverTradeContext();
+      EmttLearningRecordTradeEvents();
+     }
    if(g_signal.signalStarted)
       EmttSummaryOnSignal(g_summary);
-   if(g_signal.endedResult==EMTT_PLAN_RESULT_TARGET)
+   bool ticketBecameTrade=false;
+   if(g_signal.endedResult==EMTT_PLAN_RESULT_TARGET ||
+      g_signal.endedResult==EMTT_PLAN_RESULT_STOP)
+     {
+      int slot=-1;
+      if(g_trade.planStartBarTime>0)
+         slot=EmttLearnFileFindPlan(g_learning.file,
+                                    g_trade.planStartBarTime,g_trade.side);
+      if(slot>=0)
+        {
+         ticketBecameTrade=(
+            g_learning.file.tickets[slot].tradeFilledTime>0 ||
+            (g_trade.side==g_learning.file.tickets[slot].side &&
+             g_trade.planStartBarTime==
+                g_learning.file.tickets[slot].startBarTime &&
+             (g_trade.positionOpen || g_trade.closeRecordPending)));
+        }
+     }
+   if(!ticketBecameTrade &&
+      g_signal.endedResult==EMTT_PLAN_RESULT_TARGET)
       EmttSummaryOnWin(g_summary);
-   else if(g_signal.endedResult==EMTT_PLAN_RESULT_STOP)
+   else if(!ticketBecameTrade &&
+           g_signal.endedResult==EMTT_PLAN_RESULT_STOP)
       EmttSummaryOnLoss(g_summary);
    if(g_signal.signalStarted)
       EmttLearningRecordPlanStart(barTime,spreadPts,atr);
@@ -1938,15 +2243,11 @@ void FillPanel(SEmttPanelData &d)
 
    // A live Emtt position is detected by symbol + magic; manual trades never
    // make the block appear. Phase 2 intentionally does not invent trade data.
-   if(EmttOwnPositionOpen())
-     {
-      d.showLive=true;
-      d.liveHeader=EmttGlyph(EMTT_G_DIAMOND)+" LIVE TRADE";
-      d.ticket="Ticket:";
-      d.floatingPL="Floating P/L:";
-      d.liveSL="Live SL:";
-      d.protect="Protect:";
-     }
+   // Phase 8: the manager owns all live broker values; manual positions
+   // remain excluded by symbol + magic in EmttTradeManagerFillPanel.
+   EmttTradeManagerFillPanel(d,g_trade,g_symbol,InpMagicNumber,g_timeframe,
+                             compatible,bid,ask,point,digits);
+   EmttTradeManagerPanelStatus(d);
 
    // Rule 2: the arrow marks the dealing side - Ask for BUY, Bid for
    // SELL, no marker while WAIT or in any "--" state (17.6).
@@ -2008,6 +2309,7 @@ int OnInit()
    // Phase 7 (19.3): the learning state starts empty; the record of this
    // symbol and timeframe is bound, loaded and rewritten by the replay.
    EmttLearnStateReset(g_learning);
+   EmttTradeManagerInit(g_trade,g_symbol,g_timeframe,InpMagicNumber);
    // Panel revamp: Today / All-Time counts for this symbol + timeframe.
    EmttSummaryInit(g_summary,g_symbol,g_timeframe);
    EmttJournalTimeframeContext();
@@ -2023,6 +2325,14 @@ int OnInit()
 void OnDeinit(const int reason)
   {
    EventKillTimer();
+   if(g_trade.initialized)
+     {
+      SEmttTradeRuntime runtime;
+      EmttTradeManagerBuildRuntime(runtime);
+      EmttTradeManagerObserve(g_trade,runtime.barTime);
+      EmttLearningRecoverTradeContext();
+      EmttLearningRecordTradeEvents();
+     }
    EmttSummarySave(g_summary); // flush the Summary counts
    if(EmttOwnPositionOpen() && g_dynamic.thresholdFrozen)
      {
