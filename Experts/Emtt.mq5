@@ -2,14 +2,16 @@
 //|                                                       Emtt.mq5   |
 //|                Emtt - MT5 Trading Expert Adviser                 |
 //| Phase 6: signal and trade plan (no orders)                      |
+//| Phase 7: self-learning signal filter (no orders)                |
 //|                Spec: Emtt.md | Author: Ham | Coder: Arena        |
 //+------------------------------------------------------------------+
 #property copyright   "Author: Ham | Coder: Arena"
 #property link        ""
-#property version     "1.51"
+#property version     "1.60"
 #property description "Emtt V1.0 - MT5 Trading Expert Adviser."
 #property description "Phase 5: closed-bar volume flow (VWAP, profile, CVD) and higher-timeframe agreement."
 #property description "Phase 6: signal and trade plan (no orders)."
+#property description "Phase 7: self-learning signal filter (no orders)."
 #property description "Panel revamp: WHY removed, STATUS single-line, Summary Today/All-Time, dynamic width."
 #property description "Allowed analysis timeframes: M5 / M15 / M30 only."
 
@@ -23,6 +25,8 @@
 #include "../Include/Emtt/Emtt_TradePlan.mqh"
 #include "../Include/Emtt/Emtt_Signal.mqh"
 #include "../Include/Emtt/Emtt_Summary.mqh"
+#include "../Include/Emtt/Emtt_LearnFile.mqh"
+#include "../Include/Emtt/Emtt_Learning.mqh"
 
 input long InpMagicNumber=20251007;   // Magic number
 input bool InpAutoTrading=true;       // Auto Trading ON/OFF
@@ -73,6 +77,7 @@ SEmttMtfState              g_mtf;
 SEmttMtfContext            g_mtfContext;
 SEmttSignalState           g_signal;
 SEmttSummaryState          g_summary;
+SEmttLearningState         g_learning;
 SEmttBrokerOffsetState     g_brokerOffset;
 SEmttRegimeMeasurements    g_snapshotMeasurements;
 EEmttRegime                g_snapshotRegime=EMTT_REGIME_UNKNOWN;
@@ -636,10 +641,20 @@ bool EmttReplayClosedHistory()
                   TimeToString(g_snapshotBarTime,TIME_DATE|TIME_MINUTES));
      }
 
-   // Phase 6 (17.8): plans live in memory only, so the replay rebuilds the
-   // four views and then evaluates the signal once at the newest closed
-   // bar. A restart never restores a plan; a fresh idea starts here, and
-   // the market-price Entry is the one value that depends on the live quote.
+   // Phase 7 (19.3, 19.6): the closed-bar replay is complete. The learning
+   // record of this symbol + timeframe is bound and loaded - event 1 writes
+   // it back normalised and applies the cap - and the learned terms of the
+   // newest closed bar are evaluated, so the signal call below sees exactly
+   // the number of 19.5.
+   EmttLearningAttachAndLoad(rates[0].time);
+
+   // Phase 6 (17.8): the replay rebuilds the four views and then evaluates
+   // the signal once at the newest closed bar; the market-price Entry is the
+   // one value that depends on the live quote. Phase 7 (19.6): when the file
+   // holds an open plan, that plan is the one that resumes - the evaluation
+   // is not run for it, because the gap is checked against the plan's own
+   // levels and the signal is next evaluated at the first post-replay
+   // closed candle.
    MqlRates signalReplayBar[1];
    if(CopyRates(g_symbol,g_timeframe,1,1,signalReplayBar)==1 &&
       signalReplayBar[0].time==rates[0].time)
@@ -666,13 +681,26 @@ bool EmttReplayClosedHistory()
       const EEmttRegime signalMood=
         (g_regimeState.pending!=EMTT_REGIME_UNKNOWN ?
          g_regimeState.pending : g_snapshotRegime);
-      EmttSignalAdvance(g_signal,g_supertrend,g_smc,g_volumeFlow,g_mtf,
-                        signalMood,signalAtr,signalReplayBar[0].high,
-                        signalReplayBar[0].low,signalReplayBar[0].close,
-                        signalBid,signalAsk,signalSpread,g_timeframe,
-                        g_evaluatedBarSequence-1,rates[0].time,
-                        signalDigits,signalPoint,true);
-      EmttConsumeSignalEvents();
+      EmttLearningReadCandle(signalMood,signalAtr);
+      if(!EmttLearningResumePending())
+        {
+         SEmttLearnScoreSnapshot learningScores;
+         EmttLearningSaveScores(learningScores);
+         EmttLearningScaleScores(learningScores,g_learning.reading.scale);
+         EmttSignalAdvance(g_signal,g_supertrend,g_smc,g_volumeFlow,g_mtf,
+                           signalMood,signalAtr,signalReplayBar[0].high,
+                           signalReplayBar[0].low,signalReplayBar[0].close,
+                           signalBid,signalAsk,signalSpread,g_timeframe,
+                           g_evaluatedBarSequence-1,rates[0].time,
+                           signalDigits,signalPoint,false);
+         EmttLearningRestoreScores(learningScores);
+         EmttConsumeSignalEvents(rates[0].time,signalReplayBar[0].high,
+                                 signalReplayBar[0].low,signalSpread,
+                                 signalAtr);
+         EmttJournalSignalState(rates[0].time);
+        }
+      else
+         EmttLearningResume(rates[0].time,rates,signalMood);
      }
    return true;
   }
@@ -882,12 +910,22 @@ bool EmttProcessLatestClosedBar(const bool forceFirstEvaluation)
       const EEmttRegime signalMood=
         (g_regimeState.pending!=EMTT_REGIME_UNKNOWN ?
          g_regimeState.pending : regime);
+      // Phase 7 (19.4-19.5): the learned terms of this closed bar. The four
+      // published scores carry the learning scale for the one signal call
+      // and are restored right after it, so no published reading changes.
+      EmttLearningReadCandle(signalMood,signalAtr);
+      SEmttLearnScoreSnapshot learningScores;
+      EmttLearningSaveScores(learningScores);
+      EmttLearningScaleScores(learningScores,g_learning.reading.scale);
       EmttSignalAdvance(g_signal,g_supertrend,g_smc,g_volumeFlow,g_mtf,
                         signalMood,signalAtr,signalBar[0].high,
                         signalBar[0].low,signalBar[0].close,
                         signalBid,signalAsk,signalSpread,g_timeframe,
-                        sequence,barTime,signalDigits,signalPoint,true);
-      EmttConsumeSignalEvents();
+                        sequence,barTime,signalDigits,signalPoint,false);
+      EmttLearningRestoreScores(learningScores);
+      EmttConsumeSignalEvents(barTime,signalBar[0].high,signalBar[0].low,
+                              signalSpread,signalAtr);
+      EmttJournalSignalState(barTime);
      }
 
    EmttSetSnapshot(measurements,regime,percentile,barTime);
@@ -902,10 +940,13 @@ bool EmttProcessLatestClosedBar(const bool forceFirstEvaluation)
 void EmttResetMarketState()
   {
    // 17.7: a symbol or timeframe change ends any open plan before the
-   // signal state is reset; plans live in memory only.
-   EmttSignalChartChanged(g_signal,true);
-   EmttConsumeSignalEvents();
+   // signal state is reset. Phase 7 (19.3): the same end closes the plan's
+   // ticket and writes the old file, before the learning state is rebound
+   // to the new symbol and timeframe.
+   EmttSignalChartChanged(g_signal,false);
+   EmttConsumeSignalEvents(g_signal.lastBarTime,0.0,0.0,0,0.0);
    EmttSignalReset(g_signal);
+   EmttLearnStateReset(g_learning);
    EmttDynamicReset(g_dynamic);
    EmttRegimeReset(g_regimeState);
    EmttSupertrendReset(g_supertrend);
@@ -1047,8 +1088,8 @@ void EmttRefreshFoundation()
       // Closed applies immediately, without waiting for history or a new bar.
       EmttRegimeMarkMarketClosed(g_regimeState);
       // 17.7: the market closing ends any open plan; no evaluation runs.
-      EmttSignalMarketClosed(g_signal,true);
-      EmttConsumeSignalEvents();
+      EmttSignalMarketClosed(g_signal,false);
+      EmttConsumeSignalEvents(g_signal.lastBarTime,0.0,0.0,0,0.0);
       g_marketWasClosed=true;
      }
    else
@@ -1085,13 +1126,563 @@ void EmttRefreshFoundation()
   }
 
 //+------------------------------------------------------------------+
-//| Consume the one-shot Summary events left by the last signal call: |
-//| a started plan counts a signal, TARGET a win, STOP a loss, every |
-//| other result neither (the Phase 7 labels of 19.4). Called right  |
-//| after each EmttSignalAdvance / MarketClosed / ChartChanged call, |
-//| never on a tick.                                                  |
+//| Phase 7 (19.5): the four published scores carry the learning      |
+//| scale for exactly one EmttSignalAdvance call. The scale is applied |
+//| just before the call and the real scores are put back right after  |
+//| it, so no published reading changes and the plan builder still     |
+//| reads the real levels of 17.4. The components are copied by        |
+//| nothing: the EA owns one instance of each.                         |
 //+------------------------------------------------------------------+
-void EmttConsumeSignalEvents()
+struct SEmttLearnScoreSnapshot
+  {
+   double trend;
+   double structure;
+   double flow;
+   double htf;
+  };
+
+void EmttLearningSaveScores(SEmttLearnScoreSnapshot &saved)
+  {
+   saved.trend=g_supertrend.score;
+   saved.structure=g_smc.smcScore;
+   saved.flow=g_volumeFlow.volumeFlowScore;
+   saved.htf=g_mtf.mtfScore;
+  }
+
+void EmttLearningScaleScores(const SEmttLearnScoreSnapshot &saved,
+                             const double scale)
+  {
+   g_supertrend.score=saved.trend*scale;
+   g_smc.smcScore=saved.structure*scale;
+   g_volumeFlow.volumeFlowScore=saved.flow*scale;
+   g_mtf.mtfScore=saved.htf*scale;
+  }
+
+void EmttLearningRestoreScores(const SEmttLearnScoreSnapshot &saved)
+  {
+   g_supertrend.score=saved.trend;
+   g_smc.smcScore=saved.structure;
+   g_volumeFlow.volumeFlowScore=saved.flow;
+   g_mtf.mtfScore=saved.htf;
+  }
+
+//+------------------------------------------------------------------+
+//| 19.4-19.5: the learned terms of the newest closed bar. The four   |
+//| views, the mood of 17.2 rule 3, the 15.3 anchor session and the   |
+//| 9.2 bucket are the same readings the signal uses; the number the  |
+//| features carry is the four-view number of 17.3, never the         |
+//| adjusted one.                                                     |
+//+------------------------------------------------------------------+
+void EmttLearningFillCandle(SEmttLearnCandle &candle,
+                            const EEmttRegime mood,const double atr)
+  {
+   candle.ready=false;
+   candle.combined=0.0;
+   candle.rawNumber=-1;
+   candle.trendDirection=0;
+   candle.structureDirection=0;
+   candle.flowDirection=0;
+   candle.htfDirection=0;
+   candle.mood=EmttLearnMoodIndex(mood);
+   candle.session=EmttLearnSessionIndex(g_volumeFlow.sessionName);
+   candle.vol=EmttLearnVolIndex(g_dynamic.volatility);
+   if(!(g_supertrend.ready && g_smc.ready && g_volumeFlow.ready &&
+        g_mtf.ready))
+      return;
+   if(EmttSignalMoodBar(mood)<=0 || !EmttValidPositive(atr))
+      return;
+   candle.combined=EmttSignalCombined(g_supertrend,g_smc,g_volumeFlow,
+                                      g_mtf);
+   candle.rawNumber=EmttSignalConfidenceNumber(candle.combined);
+   candle.trendDirection=g_supertrend.direction;
+   candle.structureDirection=g_smc.bias;
+   candle.flowDirection=g_volumeFlow.flowDirection;
+   candle.htfDirection=g_mtf.htfSupertrendDirection;
+   candle.ready=true;
+  }
+
+void EmttLearningReadCandle(const EEmttRegime mood,const double atr)
+  {
+   SEmttLearnCandle candle;
+   EmttLearningFillCandle(candle,mood,atr);
+   EmttLearnEnsureModel(g_learning);
+   EmttLearnEvaluate(g_learning,candle,g_learning.reading);
+  }
+
+// 19.3: bind the learning record to this symbol and timeframe and load it.
+// The write that follows the load is event 1 of 19.3: it normalises the
+// file, applies the cap and consumes a leftover .tmp of a crashed write.
+void EmttLearningAttachAndLoad(const datetime barTime)
+  {
+   const string tfName=EmttLearnTfName(g_timeframe);
+   if(g_learning.file.loaded && g_learning.file.symbol==g_symbol &&
+      g_learning.file.tfName==tfName)
+      return;
+   const int digits=(int)SymbolInfoInteger(g_symbol,SYMBOL_DIGITS);
+   EmttLearnFileLoad(g_learning.file,g_symbol,g_timeframe,digits,barTime);
+   EmttLearnFileSave(g_learning.file,barTime);
+   g_learning.modelDirty=true;
+   g_learning.modelLabeled=0;
+   g_learning.resumeChecked=false;
+  }
+
+// 19.6: true once, when the record holds an open plan that has not been
+// resumed yet. The caller then resumes it instead of running the
+// post-replay evaluation, because the gap is checked against the plan's
+// own levels and the signal is next evaluated at the first post-replay
+// closed candle.
+bool EmttLearningResumePending()
+  {
+   if(g_learning.file.openTicket<0 || g_learning.resumeChecked)
+      return false;
+   g_learning.resumeChecked=true;
+   return true;
+  }
+
+//+------------------------------------------------------------------+
+//| 19.7 / 17.8: the journal lines of a plan. Emtt_Signal.mqh is      |
+//| byte-identical and prints them only with its own plan in hand,    |
+//| so Phase 7 prints them here from the same readings and with the   |
+//| same text - and the plan start line can then carry the learning   |
+//| part of 19.7.                                                     |
+//+------------------------------------------------------------------+
+void EmttJournalPlanStart(const datetime barTime,const int spreadPts)
+  {
+   if(!g_signal.plan.active)
+      return;
+   const int digits=(int)SymbolInfoInteger(g_symbol,SYMBOL_DIGITS);
+   PrintFormat("Emtt | Signal %s | confidence %d%% | %s, bar %d%% | bar %s",
+               EmttPlanSideName(g_signal.plan.side),g_signal.confidence,
+               EmttSignalMoodWord(g_signal.mood),g_signal.moodBar,
+               EmttLearnTimeText(barTime));
+   string line="Emtt | Plan "+EmttPlanSideName(g_signal.plan.side)+
+               " | confidence "+IntegerToString(g_signal.confidence)+"%";
+   const string learningText=EmttLearnPlanText(g_learning,
+                                               g_learning.reading);
+   if(learningText!="")
+      line+=" | "+learningText;
+   line+=" | entry "+DoubleToString(g_signal.plan.entry,digits)+" ("+
+         g_signal.plan.entrySource+")"+
+         " | stop "+DoubleToString(g_signal.plan.stop,digits)+" ("+
+         g_signal.plan.stopSource+" "+
+         (g_signal.plan.side>0 ? "-" : "+")+
+         DoubleToString(EMTT_PLAN_STOP_BUFFER_ATR,1)+" ATR)"+
+         " | target "+DoubleToString(g_signal.plan.target,digits)+" ("+
+         g_signal.plan.targetSource+")"+
+         " | RR 1:"+DoubleToString(g_signal.plan.riskReward,1)+
+         " | expected "+g_signal.plan.duration+
+         " | spread "+IntegerToString(spreadPts)+" pts"+
+         " | bar "+EmttLearnTimeText(barTime);
+   Print(line);
+   g_signal.hasJournaledSignal=true;
+   g_signal.journaledSignal=g_signal.signal;
+   g_signal.hasJournaledWait=false;
+   g_signal.journaledWaitReason=EMTT_SIG_WAIT_NONE;
+  }
+
+void EmttJournalEntryReached(const int side,const double entry,
+                             const int digits,const datetime barTime)
+  {
+   PrintFormat("Emtt | Plan %s | entry reached | %s | bar %s",
+               EmttPlanSideName(side),DoubleToString(entry,digits),
+               EmttLearnTimeText(barTime));
+  }
+
+// The 17.8 result line. `resumedFromFile` marks the 19.6 end of a plan
+// that was restored from the record, where 17.8 puts `shared candle`.
+void EmttJournalPlanResult(const int side,const int result,
+                           const double exitPrice,const double entry,
+                           const int digits,const double point,
+                           const long startSequence,const long endSequence,
+                           const bool sharedCandle,
+                           const bool resumedFromFile,
+                           const datetime barTime)
+  {
+   double points=0.0;
+   if(point>0.0)
+      points=(side>0 ? exitPrice-entry : entry-exitPrice)/point;
+   const int pointsWhole=(int)MathRound(points);
+   const int absPoints=(pointsWhole<0 ? -pointsWhole : pointsWhole);
+   const string sign=(pointsWhole>=0 ? "+" : "-");
+   long candles=0;
+   if(startSequence>=0 && endSequence>=startSequence)
+      candles=endSequence-startSequence;
+   string tail="";
+   if(sharedCandle)
+      tail+=" | shared candle";
+   if(resumedFromFile)
+      tail+=" | resumed from file";
+   PrintFormat("Emtt | Plan %s result | %s | exit %s | %s%d pts | %d candles%s | bar %s",
+               EmttPlanSideName(side),
+               EmttPlanResultName(EmttLearnPlanResultOf(result)),
+               DoubleToString(exitPrice,digits),sign,absPoints,(int)candles,
+               tail,EmttLearnTimeText(barTime));
+  }
+
+//+------------------------------------------------------------------+
+//| 19.3: the three ticket events of the file.                        |
+//+------------------------------------------------------------------+
+void EmttLearningRecordPlanStart(const datetime barTime,
+                                 const int spreadPts,const double atr)
+  {
+   if(!g_signal.plan.active)
+      return;
+   const int estimate=EmttLearnEstimateMinutes(g_signal.plan,
+                                               g_supertrend.direction,
+                                               g_supertrend.barsSinceFlip,
+                                               g_supertrend.distanceATRs,atr,
+                                               g_timeframe);
+   SEmttLearnTicket ticket;
+   EmttLearnTicketFromPlan(ticket,g_signal.plan,
+                           g_learning.reading.rawNumber,
+                           g_supertrend.direction,g_smc.bias,
+                           g_volumeFlow.flowDirection,
+                           g_mtf.htfSupertrendDirection,
+                           EmttLearnMoodIndex(g_signal.mood),
+                           EmttLearnSessionIndex(g_volumeFlow.sessionName),
+                           EmttLearnVolIndex(g_dynamic.volatility),
+                           estimate,spreadPts,g_signal.plan.startSequence);
+   const int slot=EmttLearnFileAddPlan(g_learning.file,ticket);
+   if(slot<0)
+      return;
+   EmttLearnFileSave(g_learning.file,barTime);
+   EmttJournalPlanStart(barTime,spreadPts);
+  }
+
+void EmttLearningRecordEntryReached(const datetime barTime)
+  {
+   const int slot=g_learning.file.openTicket;
+   if(slot<0 || !g_signal.plan.active)
+      return;
+   if(g_learning.file.tickets[slot].state!=EMTT_LEARN_STATE_PENDING)
+      return;
+   if(g_signal.plan.status!=EMTT_PLAN_ACTIVE)
+      return;
+   if(g_signal.plan.startBarTime!=g_learning.file.tickets[slot].startBarTime)
+      return;
+   EmttLearnFileMarkReached(g_learning.file,slot,barTime);
+   EmttJournalEntryReached(g_learning.file.tickets[slot].side,
+                           g_learning.file.tickets[slot].entry,
+                           g_learning.file.digits,barTime);
+   EmttLearnFileSave(g_learning.file,barTime);
+  }
+
+void EmttLearningRecordPlanEnd(const datetime barTime,const double barHigh,
+                               const double barLow)
+  {
+   const EEmttPlanResult planResult=g_signal.endedResult;
+   if(planResult==EMTT_PLAN_RESULT_NONE)
+      return;
+   const int slot=g_learning.file.openTicket;
+   if(slot<0)
+      return;
+   const SEmttLearnTicket ticket=g_learning.file.tickets[slot];
+   const int digits=g_learning.file.digits;
+   const double point=SymbolInfoDouble(g_symbol,SYMBOL_POINT);
+   const int result=EmttLearnResultOfPlanResult(planResult);
+   double exitPrice=g_signal.lastClose;
+   if(result==EMTT_LEARN_RESULT_TARGET || result==EMTT_LEARN_RESULT_MISSED)
+      exitPrice=ticket.target;
+   else if(result==EMTT_LEARN_RESULT_STOP ||
+           result==EMTT_LEARN_RESULT_CANCELLED)
+      exitPrice=ticket.stop;
+   int points=0;
+   if(point>0.0)
+      points=(int)MathRound((ticket.side>0 ? exitPrice-ticket.entry
+                                           : ticket.entry-exitPrice)/point);
+   int candles=0;
+   if(ticket.startSequence>=0 &&
+      g_signal.lastSequence>=ticket.startSequence)
+      candles=(int)(g_signal.lastSequence-ticket.startSequence);
+   // 17.7: the ending candle is shared when more than one level lies
+   // between its low and its high. Only a level end passes the candle -
+   // a signal-changed end, a market-close end and a chart-change end pass
+   // none and are never shared, exactly as Emtt_Signal.mqh passes them.
+   bool shared=false;
+   const bool levelEnd=(result==EMTT_LEARN_RESULT_TARGET ||
+                        result==EMTT_LEARN_RESULT_STOP ||
+                        result==EMTT_LEARN_RESULT_MISSED ||
+                        result==EMTT_LEARN_RESULT_CANCELLED);
+   if(levelEnd && barHigh>0.0 && barLow>0.0 && barHigh>=barLow)
+     {
+      const int touched=((ticket.entry>=barLow && ticket.entry<=barHigh) ? 1 : 0)+
+                        ((ticket.stop>=barLow && ticket.stop<=barHigh) ? 1 : 0)+
+                        ((ticket.target>=barLow && ticket.target<=barHigh) ? 1 : 0);
+      shared=(touched>1);
+     }
+   EmttLearnFileCloseTicket(g_learning.file,slot,result,shared,exitPrice,
+                            points,candles);
+   EmttLearnFileSave(g_learning.file,barTime);
+   EmttJournalPlanResult(ticket.side,result,exitPrice,ticket.entry,digits,
+                         point,ticket.startSequence,g_signal.lastSequence,
+                         shared,false,barTime);
+   if(result==EMTT_LEARN_RESULT_TARGET || result==EMTT_LEARN_RESULT_STOP)
+     {
+      // 19.4: a labeled result trains the model at once; the weights are
+      // recomputed from the tickets, never stored.
+      EmttLearnJournalUpdated(g_learning,barTime);
+      g_learning.modelDirty=true;
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| 19.7 / 17.8: the journal discipline the engine would run with a   |
+//| journalling call - state changes, plan events and WAIT reason     |
+//| changes only, never a quiet candle.                               |
+//+------------------------------------------------------------------+
+void EmttJournalSignalState(const datetime barTime)
+  {
+   if(!g_signal.viewsReady)
+      return;
+   if(!g_signal.hasJournaledSignal ||
+      g_signal.journaledSignal!=g_signal.signal)
+     {
+      if(g_signal.signal!=0)
+         PrintFormat("Emtt | Signal %s | confidence %d%% | %s, bar %d%% | bar %s",
+                     EmttPlanSideName(g_signal.signal),
+                     g_signal.confidence,EmttSignalMoodWord(g_signal.mood),
+                     g_signal.moodBar,EmttLearnTimeText(barTime));
+      else
+         PrintFormat("Emtt | Signal WAIT | %s | bar %s",
+                     EmttSignalWaitDetail(g_signal),
+                     EmttLearnTimeText(barTime));
+      g_signal.hasJournaledSignal=true;
+      g_signal.journaledSignal=g_signal.signal;
+      if(g_signal.signal==0)
+        {
+         g_signal.hasJournaledWait=true;
+         g_signal.journaledWaitReason=g_signal.waitReason;
+        }
+      else
+        {
+         g_signal.hasJournaledWait=false;
+         g_signal.journaledWaitReason=EMTT_SIG_WAIT_NONE;
+        }
+     }
+   else if(g_signal.signal==0 && g_signal.hasJournaledWait &&
+           g_signal.journaledWaitReason!=g_signal.waitReason)
+     {
+      PrintFormat("Emtt | Signal WAIT | reason changed: %s | bar %s",
+                  EmttSignalWaitBare(g_signal),
+                  EmttLearnTimeText(barTime));
+      g_signal.journaledWaitReason=g_signal.waitReason;
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| 19.6: restore the file's plan into the signal state, so Row 2 and |
+//| Row 3 continue with it and the engine resumes the same plan.      |
+//+------------------------------------------------------------------+
+void EmttLearningRestorePlan(const SEmttLearnTicket &ticket,
+                             const long startSequence,
+                             const long newestSequence,
+                             const datetime newestBarTime,
+                             const double newestClose,
+                             const EEmttRegime mood)
+  {
+   EmttPlanReset(g_signal.plan);
+   g_signal.plan.active=true;
+   g_signal.plan.side=ticket.side;
+   g_signal.plan.entryKind=(ticket.entryKind==EMTT_LEARN_ENTRY_BLOCK ?
+                            EMTT_PLAN_ENTRY_BLOCK : EMTT_PLAN_ENTRY_MARKET);
+   g_signal.plan.status=(ticket.state==EMTT_LEARN_STATE_ACTIVE ?
+                         EMTT_PLAN_ACTIVE : EMTT_PLAN_PENDING);
+   g_signal.plan.entry=ticket.entry;
+   g_signal.plan.stop=ticket.stop;
+   g_signal.plan.target=ticket.target;
+   const double risk=MathAbs(ticket.entry-ticket.stop);
+   g_signal.plan.riskReward=(risk>0.0 ?
+                             MathAbs(ticket.target-ticket.entry)/risk : 0.0);
+   g_signal.plan.entrySource=(ticket.entryKind==EMTT_LEARN_ENTRY_BLOCK ?
+                              "order block edge" : "market price");
+   g_signal.plan.stopSource="";
+   g_signal.plan.targetSource="";
+   g_signal.plan.duration=EmttLearnDurationFromEstimate(ticket.est,
+                                                        g_timeframe);
+   g_signal.plan.startSequence=startSequence;
+   g_signal.plan.startBarTime=ticket.startBarTime;
+   g_signal.plan.startClose=newestClose;
+
+   g_signal.signal=ticket.side;
+   g_signal.previousSignal=ticket.side;
+   g_signal.justEnded=false;
+   g_signal.waitReason=EMTT_SIG_WAIT_NONE;
+   g_signal.waitSide=0;
+   g_signal.viewsReady=g_learning.reading.ready;
+   g_signal.confidence=(g_learning.reading.ready ? g_learning.reading.number
+                                                 : -1);
+   g_signal.combined=g_learning.reading.combined*
+                     g_learning.reading.scale;
+   g_signal.mood=mood;
+   g_signal.moodBar=EmttSignalMoodBar(mood);
+   g_signal.lastClose=newestClose;
+   g_signal.lastBarTime=newestBarTime;
+   g_signal.lastSequence=newestSequence;
+   g_signal.digits=(int)SymbolInfoInteger(g_symbol,SYMBOL_DIGITS);
+   g_signal.point=SymbolInfoDouble(g_symbol,SYMBOL_POINT);
+   g_signal.initialized=true;
+   g_signal.hasJournaledSignal=true;
+   g_signal.journaledSignal=ticket.side;
+   g_signal.hasJournaledWait=false;
+   g_signal.journaledWaitReason=EMTT_SIG_WAIT_NONE;
+  }
+
+//+------------------------------------------------------------------+
+//| 19.6 the plan across a restart. The file's open plan line is the  |
+//| durable copy of the plan; the closed candles between its start bar |
+//| and the newest closed candle are checked against its levels with   |
+//| the 17.7 rules. The gap is never checked against the signals - the |
+//| components' per-candle history is not stored, so a signal change   |
+//| inside the gap is not reconstructed and the signal is next         |
+//| evaluated at the first post-replay closed candle.                  |
+//+------------------------------------------------------------------+
+void EmttLearningResume(const datetime barTime,const MqlRates &rates[],
+                        const EEmttRegime mood)
+  {
+   const int slot=g_learning.file.openTicket;
+   if(slot<0)
+      return;
+   SEmttLearnTicket ticket=g_learning.file.tickets[slot];
+   const int digits=g_learning.file.digits;
+   const double point=SymbolInfoDouble(g_symbol,SYMBOL_POINT);
+   const int barCount=ArraySize(rates);
+   const long newestSequence=(long)(g_evaluatedBarSequence-1);
+
+   int startIndex=-1;
+   for(int i=0;i<barCount;i++)
+      if(rates[i].time==ticket.startBarTime)
+        {
+         startIndex=i;
+         break;
+        }
+   long startSequence=-1;
+   if(startIndex>=0)
+      startSequence=(long)(newestSequence-(long)startIndex);
+
+   int candlesChecked=0;
+   int endedResult=EMTT_LEARN_RESULT_NONE;
+   double endPrice=0.0;
+   bool endedShared=false;
+   datetime endBarTime=barTime;
+   long endSequence=newestSequence;
+   if(startIndex<0)
+     {
+      // 19.6: the start bar is no longer in the copied history, so the
+      // plan cannot be checked and ends `chart` at the newest closed bar.
+      endedResult=EMTT_LEARN_RESULT_CHART;
+      if(barCount>0)
+        {
+         endPrice=rates[0].close;
+         endBarTime=rates[0].time;
+        }
+     }
+   else
+      for(int i=startIndex-1;i>=0 && endedResult==EMTT_LEARN_RESULT_NONE;i--)
+        {
+         candlesChecked++;
+         const bool touchesEntry=(rates[i].low<=ticket.entry &&
+                                  rates[i].high>=ticket.entry);
+         const bool touchesStop=(rates[i].low<=ticket.stop &&
+                                 rates[i].high>=ticket.stop);
+         const bool touchesTarget=(rates[i].low<=ticket.target &&
+                                   rates[i].high>=ticket.target);
+         if(ticket.state==EMTT_LEARN_STATE_PENDING)
+           {
+            // 17.7: one candle, more than one level - the worse result
+            // counts: stop reached, cancelled, missed, target reached.
+            if(touchesStop)
+              {
+               endedResult=(touchesEntry ? EMTT_LEARN_RESULT_STOP
+                                         : EMTT_LEARN_RESULT_CANCELLED);
+               endPrice=ticket.stop;
+              }
+            else if(touchesTarget)
+              {
+               endedResult=EMTT_LEARN_RESULT_MISSED;
+               endPrice=ticket.target;
+              }
+            else if(touchesEntry)
+              {
+               ticket.state=EMTT_LEARN_STATE_ACTIVE;
+               ticket.reachedBarTime=rates[i].time;
+              }
+           }
+         else
+           {
+            if(touchesStop)
+              {
+               endedResult=EMTT_LEARN_RESULT_STOP;
+               endPrice=ticket.stop;
+              }
+            else if(touchesTarget)
+              {
+               endedResult=EMTT_LEARN_RESULT_TARGET;
+               endPrice=ticket.target;
+              }
+           }
+         if(endedResult!=EMTT_LEARN_RESULT_NONE)
+           {
+            endBarTime=rates[i].time;
+            endSequence=(long)(newestSequence-(long)i);
+            const int touched=(touchesEntry ? 1 : 0)+(touchesStop ? 1 : 0)+
+                              (touchesTarget ? 1 : 0);
+            endedShared=(touched>1);
+           }
+        }
+
+   if(endedResult!=EMTT_LEARN_RESULT_NONE)
+     {
+      int points=0;
+      if(point>0.0)
+         points=(int)MathRound((ticket.side>0 ? endPrice-ticket.entry
+                                              : ticket.entry-endPrice)/point);
+      int candles=0;
+      if(startSequence>=0 && endSequence>=startSequence)
+         candles=(int)(endSequence-startSequence);
+      EmttLearnFileCloseTicket(g_learning.file,slot,endedResult,endedShared,
+                               endPrice,points,candles);
+      EmttLearnFileSave(g_learning.file,endBarTime);
+      EmttJournalPlanResult(ticket.side,endedResult,endPrice,ticket.entry,
+                            digits,point,startSequence,endSequence,
+                            endedShared,true,endBarTime);
+      if(endedResult==EMTT_LEARN_RESULT_TARGET ||
+         endedResult==EMTT_LEARN_RESULT_STOP)
+        {
+         EmttLearnJournalUpdated(g_learning,endBarTime);
+         g_learning.modelDirty=true;
+        }
+     }
+   else
+     {
+      if(ticket.state==EMTT_LEARN_STATE_ACTIVE &&
+         g_learning.file.tickets[slot].state==EMTT_LEARN_STATE_PENDING)
+        {
+         // 19.3 event 3: the gap reached the plan's Entry.
+         EmttLearnFileMarkReached(g_learning.file,slot,ticket.reachedBarTime);
+         EmttJournalEntryReached(ticket.side,ticket.entry,digits,
+                                 ticket.reachedBarTime);
+         EmttLearnFileSave(g_learning.file,barTime);
+        }
+      if(barCount>0)
+         EmttLearningRestorePlan(ticket,startSequence,newestSequence,
+                                 rates[0].time,rates[0].close,mood);
+     }
+   EmttLearnJournalResumed(ticket,candlesChecked,barTime);
+  }
+
+//+------------------------------------------------------------------+
+//| Consume the one-shot events left by the last signal call: the     |
+//| Summary counts (a started plan counts a signal, TARGET a win,     |
+//| STOP a loss), the three 19.3 ticket events and the 17.8 journal   |
+//| lines of a plan start and a plan end. Emtt_Signal.mqh is called   |
+//| with writeJournal=false, so Phase 7 prints those lines itself -   |
+//| only the plan start line can carry the learning part of 19.7.     |
+//| Called right after each EmttSignalAdvance / MarketClosed /        |
+//| ChartChanged call, never on a tick.                               |
+//+------------------------------------------------------------------+
+void EmttConsumeSignalEvents(const datetime barTime,const double barHigh,
+                             const double barLow,const int spreadPts,
+                             const double atr)
   {
    if(g_signal.signalStarted)
       EmttSummaryOnSignal(g_summary);
@@ -1099,6 +1690,11 @@ void EmttConsumeSignalEvents()
       EmttSummaryOnWin(g_summary);
    else if(g_signal.endedResult==EMTT_PLAN_RESULT_STOP)
       EmttSummaryOnLoss(g_summary);
+   if(g_signal.signalStarted)
+      EmttLearningRecordPlanStart(barTime,spreadPts,atr);
+   EmttLearningRecordEntryReached(barTime);
+   if(g_signal.endedResult!=EMTT_PLAN_RESULT_NONE)
+      EmttLearningRecordPlanEnd(barTime,barHigh,barLow);
    g_signal.signalStarted=false;
    g_signal.endedResult=EMTT_PLAN_RESULT_NONE;
   }
@@ -1276,12 +1872,34 @@ void FillPanel(SEmttPanelData &d)
          d.why=EmttWhyWithVolumeFlow(d.why,g_volumeFlow,digits);
          d.why=EmttWhyWithMtf(d.why,g_mtf,g_supertrend.direction);
 
+         // Phase 7 (19.7): Row 9 gains one sixth clause, appended last,
+         // with the same " | " rule as 15.10 - appended only when it is
+         // non-empty, never a trailing " | ". The WHY row itself was
+         // retired by the 2026-10-11 panel revamp and the author decided
+         // (2026-10-11) that the learning clause is carried by the journal
+         // only, so the renderer ignores this field: the clause is built
+         // here, exactly as 19.7 writes it, and shown by the journal lines
+         // of the plan start, of a labeled result and of a resume.
+         d.why=EmttLearnWhyAppend(d.why,
+                 EmttLearnWhyClause(g_learning,g_learning.reading));
+
          // Row 10: the Phase 6 signal line replaces the terminal line of
          // 15.10 once all four views are ready; the Phase 3-5 event lines
          // show only while they are not (17.6).
          if(sigReady)
            {
             d.status=EmttSignalStatusText(g_signal,bid,ask);
+            // Phase 7 (19.7): the one WAIT reason Phase 7 adds is checked
+            // before the first reason of 17.6, so that reason can never
+            // hide the cause. The stay-margin line above is unchanged and
+            // was judged on the adjusted number.
+            if(g_signal.signal==0 && !g_signal.plan.active)
+              {
+               const string learningStatus=EmttLearnHoldReason(
+                  g_learning,g_learning.reading,g_signal.moodBar);
+               if(learningStatus!="")
+                  d.status=learningStatus;
+              }
            }
          else
            {
@@ -1387,6 +2005,9 @@ int OnInit()
    EmttVfReset(g_volumeFlow);
    EmttMtfReset(g_mtf,g_mtfContext);
    EmttSignalReset(g_signal);
+   // Phase 7 (19.3): the learning state starts empty; the record of this
+   // symbol and timeframe is bound, loaded and rewritten by the replay.
+   EmttLearnStateReset(g_learning);
    // Panel revamp: Today / All-Time counts for this symbol + timeframe.
    EmttSummaryInit(g_summary,g_symbol,g_timeframe);
    EmttJournalTimeframeContext();
