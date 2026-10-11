@@ -2772,3 +2772,213 @@ No tick-level CVD or divergence detection; no trailing Layer-4 override input an
 **Closure boundary.** No known Phase 8 code item remains unimplemented within 21.1–21.16; the items listed under 21.16 are intentionally excluded, not unfinished. The nine Phase 1–6 modules are not part of the Phase 8 change set and carry no Phase 8 edit; `Emtt_LearnFile.mqh` and `Emtt_Learning.mqh` changed only as 21.1 says, verified against the merge's first parent (the `trade` grammar part and the `tradeNetPoints` label). The live-terminal bullets (a)–(n) above and the `Auto Trading: ON` demo run are the author's own demo-chart record, confirmed on 2026-10-11 (see the verification stamp above). The native MetaEditor compile was the author's live-terminal step, exactly as in sections 10, 12, 14, 16, 18 and 20, and is settled by that confirmed demo run.
 
 **Parser check: PASSED (2026-10-11).** Rule 3, `python tools/mql5_parser_check.py` → exit `0`, `15 MQL source(s) parsed, 0 syntax error(s)`, the built-in negative control rejected first and then accepted. Full sha256 and node counts at delivery: `Experts/Emtt.mq5` sha256 `30dbbe2c9f78caeea04be12af12782b5ea325d0a80b5d79d5b639c770553f92f` (20051 nodes, cumulative, shared with Phases 1–7); `Include/Emtt/Emtt_Trade.mqh` sha256 `00eee02dc193fd4674483ab8b78d2b2bad9e0c2fdda83706f969f6451dbc2eb4` (7388 nodes); `Include/Emtt/Emtt_TradeManager.mqh` sha256 `8cb5dd5e3466440b8ecc8f3913df99dc6ad783678561676b89caaa43d5b1b974` (16654 nodes); `Include/Emtt/Emtt_LearnFile.mqh` sha256 `054cd3f6926ae1416b8e166b7ce2788c351b3fca001ea46e44e0dddc6040ce9d` (8049 nodes); `Include/Emtt/Emtt_Learning.mqh` sha256 `2bd1c3eae2f85d1b9a939423470ba5d816a84428cadf983595b66db9c5e08acd` (4269 nodes). The other ten sources are accepted unchanged; `Emtt_Dashboard.mqh` keeps its panel-revamp digest `22392551ed94bb3c38badea5b74e589c5d90f6ca75f41d8cb4ced541b4077b70`.
+
+---
+
+## 23. Phase 9 — Parameter-Optimization Persistence (the last carried-forward item)
+
+**Status: SPEC WRITTEN (2026-10-11) — AUTHOR'S DECISIONS RECORDED; BUILD AUTHORISED TO START IN A NEW CHAT FROM THIS SECTION.** The author decided on 2026-10-11: (1) it is **one phase**, delivered whole, not split; (2) there is **one new input**, `Parameter optimization`, **default `true`**, placed **directly below the magic number** and above the `Auto Trading` group; (3) the learned data lives **with the learning data** — one file per symbol and timeframe in the same `MQL5\Files\Emtt_Learning\` folder, under the builder's suffix decision of 23.7. This phase builds the last item 15.14 carried forward and 21.16 kept for the polish phase. It places no order of its own, draws nothing on the chart, and adds no panel row.
+
+This phase gives Emtt the one thing it does not have: the ability to notice, from its own results, that **the bar it demands before it acts is set too high or too low** — and to move that bar, within the values the author already approved, and to remember the move across restarts. Everything else about a decision stays exactly as Phases 6–8 built it.
+
+**What Phase 9 is not.** It is not a general optimizer. It does not search for new numbers, it does not invent values, and it does not tune the indicators that measure the market. The reasons are in 23.4, and they are structural, not a matter of taste.
+
+### 23.1 Files
+
+| File | Change |
+|---|---|
+| `Include/Emtt/Emtt_ParamOpt.mqh` | new — the four mood cells, the win / loss tallies, the near-miss lifecycle, the decision rule of 23.6 and the learned bar; pure logic, no file access, no chart, no order |
+| `Include/Emtt/Emtt_ParamFile.mqh` | new — the file of 23.7: folder and name, the line grammar, load, whole-file rewrite through a `.tmp` file, the version and malformed-line handling |
+| `Experts/Emtt.mq5` | the input of 23.3 directly below the magic number; the near-miss evaluation on the closed-candle path after the replay; the learned bar into the 17.3 gate; the ticket `par` part at a plan start; `#property version` becomes `1.70`; the description gains `Phase 9: parameter-optimization persistence.` |
+| `Include/Emtt/Emtt_Signal.mqh` | the one edit of 23.3a below. Nothing else in the module changes |
+| `Include/Emtt/Emtt_LearnFile.mqh` | the ticket `par` part of 23.8 — grammar only. The 16 features, the model and the counts of 19.3–19.4 are **not touched** |
+| `Include/Emtt/Emtt_Learning.mqh` | reads past the new `par` part and ignores it. No feature, weight or label changes |
+| `tests/phase9_reference.py` + `tests/test_phase9_reference.py` | new — MT5-free mirror of 23.4–23.8, same pattern as Phases 2–8; scope in 23.10 |
+| `tools/mql5_compile_smoke.py` | contract gains the two headers, the Phase 9 markers and the guards of 23.10 |
+| `README.md` | one Phase 9 paragraph |
+
+`Emtt_Dashboard.mqh`, `Emtt_DynamicParams.mqh`, `Emtt_Regime.mqh`, `Emtt_Supertrend.mqh`, `Emtt_SMC.mqh`, `Emtt_VolumeFlow.mqh`, `Emtt_MTF.mqh`, `Emtt_TradePlan.mqh`, `Emtt_Summary.mqh`, `Emtt_Trade.mqh` and `Emtt_TradeManager.mqh` are **not touched** and stay byte-identical. Sections 1–22 are not rewritten; only status stamps are appended. No new chart-timeframe handle and no GlobalVariable is added.
+
+**23.3a The one edit to `Emtt_Signal.mqh`.** The bar is computed inside the module today — `EmttSignalAdvance()` sets `state.moodBar = EmttSignalMoodBar(mood)` — so a learned bar cannot be applied from outside it. The edit is exactly one argument and one line: `EmttSignalAdvance()` gains `const int learnedBar` (0 = none), and `state.moodBar` takes `learnedBar` when it is positive, otherwise the 9.2.4 value exactly as today. The stay margin of 17.5 row h needs no change because it already reads `state.moodBar`, so `bar - 5` follows the learned bar automatically, and the WAIT wording of 17.6 quotes the learned bar because it already quotes `state.moodBar`. No other line of the module changes: the four views, the weights, the combination, the gate order, the plan lifecycle, the results and the journal stay exactly as Phase 6 built them. With the input `false` the EA passes 0 and the module behaves identically to Phase 8.
+
+### 23.2 Rules for this phase
+
+1. **One number moves.** Phase 9 changes the confidence bar of 9.2.4 and nothing else about a decision. Entry, Stop, Target, Risk:Reward and Expected Duration stay exactly 17.4; the four views, the weights and the combination stay exactly 17.3; the stay margin stays 5 points below whatever the bar now is; the plan lifecycle stays exactly 17.7; every management row of 21.14 stays exactly as it is.
+2. **Closed candles only.** The near-miss is evaluated on the newest closed candle, after the replay, exactly like the plan of 17.7. Index 0 is never read. Per tick, only the Price Row updates, as today.
+3. **Never during the replay.** The init / timeframe-change / market-reopen replay reconstructs measurement and the current plan. It **never** evaluates a near-miss and **never** adds a tally, or a restart would re-learn the same history every time and the tallies would inflate without bound.
+4. **A learned bar is loaded once and frozen for the session.** It is read at init, before the replay, so the replay and the live path agree. A move takes effect at the next closed candle.
+5. **Nothing invented.** Every candidate value is one the author already approved in 9.2.4. Phase 9 chooses between them; it never computes a number between them.
+6. **A near-miss is not a signal.** It is never counted in the Summary rows, never becomes a plan, never appears in the LIVE TRADE block, never trains the Phase 7 model, never places an order and never adds a panel row.
+7. **One file, written rarely.** The `.params` file of 23.7 is the only new thing Emtt writes. It is written at init after the load, and on a move or a tally change — never per tick, never per timer.
+8. **Determinism.** The same file and the same closed candles in the same order always produce the same tallies, the same moves and the same bar. No randomness, no shuffling, no clock, no seed.
+9. **ASCII source.** The two new headers contain only ASCII characters; every glyph or dash is written as an escape, exactly as 17.2 rule 9 requires.
+10. **Nothing else changes.** No new panel row, no change to palette, font or width, no change to any module outside 23.1.
+
+### 23.3 The input
+
+```
+input long InpMagicNumber=20251007;        // Magic number
+input bool InpParamOptimization=true;      // Parameter optimization ON/OFF
+input group "Auto Trading"
+```
+
+- **Placement is part of the specification:** directly below the magic number, above the `Auto Trading` group. It is not a trading toggle and does not belong in that group.
+- **`true` (default):** the whole of 23.4–23.8 is live.
+- **`false`:** Emtt behaves **exactly** as Phase 8. No `.params` file is created, read or written; no near-miss is evaluated; the bar is exactly 9.2.4; the ticket carries no `par` part, so the `.learn` grammar is byte-identical to Phase 8. Turning it off never deletes or edits an existing `.params` file; turning it back on resumes from it.
+- The input is read once at init. Changing it needs the usual re-attach, like every other input.
+
+### 23.4 What may be learned, and what is frozen forever
+
+**Frozen forever — every measurement parameter.** The ATR period, the Kaufman ER period, the KAMA periods, the Bollinger settings, the 200-bar volatility window, the K-Means window, the structure window, the swing strength, the displacement body period and the volume-profile window are never adjusted by a result. Two structural reasons, both already in this document:
+
+1. **They produce the context.** 9.2 line 259 forbids feeding a parameter back into the measurement that decided it. Tuning the ATR period from outcomes would let the result of a trade change the volatility bucket and the regime that produced the trade.
+2. **It would break the no-repaint guarantee.** Sections 10, 12, 14 and 16 each require that the same closed bars always give the same answer, and that a restart or a timeframe round-trip reproduces identical state. A measurement parameter that depends on accumulated results would resolve a different regime for the same historical bars after more trades, so the panel's own history would change retroactively.
+
+**Frozen in this phase — every management row.** The stop buffer, the stop minimum and maximum distance, the entry reach, the speed floor, the duration band, the breakeven trigger, the partial percentage, the trailing base and its method bands and multipliers, the news multipliers and the time exit stay exactly as 17.5 and 21.14 set them. The reason is evidence, not caution: each of those rows resolves to one value per market condition, so comparing a Ranging trade against a Trending trade compares **conditions**, not settings. There is no counterfactual, and a rule built on that comparison would be noise.
+
+**Learned in this phase — one row: the confidence bar of 9.2.4.** It is a strictness gate, it acts on nothing that measures the market, and — uniquely among Emtt's rows — a real counterfactual for it exists, because Emtt already computes the number for setups it rejects. That is the near-miss of 23.5.
+
+| Mood | Base bar (9.2.4) | Candidate set | Notes |
+|---|---|---|---|
+| TRENDING | 60 | 60 / 70 / 75 | one learned value per mood, per symbol + timeframe |
+| RANGING | 70 | 60 / 70 / 75 | the same three approved values everywhere |
+| VOLATILE | 70 | 60 / 70 / 75 | a cell at 60 cannot go lower; a cell at 75 cannot go higher |
+| TRANSITION | 75 | 60 / 70 / 75 | the clamp holds, and 23.6 journals the held move |
+
+The candidate set is the set of values 9.2.4 already approves, and nothing else. No fractional blend, no `62.5`, no value the author has not already signed off. If the author later wants finer steps, that is one line in this table and no other change.
+
+### 23.5 The evidence — the near-miss
+
+A near-miss is a setup Emtt understood, priced, and refused **only** because the number fell short of the bar. On a closed candle, when all of these hold:
+
+1. the input is `true`, and no plan is active, and no plan ended on this candle (17.7's next-candle rule);
+2. the four views give a side, and the number of 17.3 is **below** the bar;
+3. the shortfall is **10 confidence points or fewer** (`EMTT_POPT_NEAR_BAND 10`) — one step of the candidate set, so only setups that were genuinely close are evidence;
+4. `EmttPlanBuild` returns no failure for that side — so the setup has a real Entry, Stop and Target, exactly as 17.4 computes them, with no level invented and no order sent;
+
+then Emtt holds that plan in memory as **the one near-miss**, replacing any unresolved near-miss (the replacement is journaled). It is watched on closed candles with the paper rules of 17.7 unchanged — the same worse-result order, the same next-candle rule, the same `shared` marking — and when it ends:
+
+- `target` reached → **win**; `stop` reached → **loss**; every other 17.7 result → **neither**, and no tally changes.
+- The win or loss is added to the near tally of the mood cell the near-miss started in. The mood is read at the near-miss's start candle and never revised.
+
+A near-miss is never: a signal, a Summary count, a plan, a ticket in the `.learn` file, a training row for the Phase 7 model, a panel row, a LIVE TRADE block, or an order. It exists to answer one question — *would the setups Emtt refused have worked?* — and nothing reads it except 23.6.
+
+A restart loses an unresolved near-miss. That is deliberate: it is evidence, not a trade, and the alternative would reopen the plan-persistence rules of 19.6 for something that is never shown and never traded.
+
+### 23.6 The decision rule
+
+Per mood cell, with `aW / aL` the accepted wins and losses and `nW / nL` the near-miss wins and losses, **both counted since that cell's last move**:
+
+1. **Wait for evidence.** Nothing is decided until `aW + aL >= 20` **and** `nW + nL >= 20` (`EMTT_POPT_MIN_SAMPLES 20`, gaeni 3.5's figure). Before that the cell keeps its base bar and nothing is written.
+2. **Compare.** `rateA = aW / (aW + aL)`, `rateN = nW / (nW + nL)`.
+3. **Loosen** — if `rateN >= rateA - 0.05` (`EMTT_POPT_LOOSE 0.05`): the setups Emtt refused did as well as the ones it took, so the bar is costing trades it should have taken. Move the bar **one step down** in the candidate set.
+4. **Tighten** — else if `rateN <= rateA - 0.20` (`EMTT_POPT_TIGHT 0.20`): the refused setups were clearly worse, so the bar is doing its job and can be stricter. Move the bar **one step up**.
+5. **Otherwise hold.** Between those two bands the evidence says nothing, and the bar does not move. The tallies keep accumulating.
+6. **Clamp.** A move that would leave the candidate set does not happen. The cell stays where it is, the tallies reset, and the journal says the move was held at the approved limit.
+7. **Reset on any decision.** After a move **or** a held move, both tallies return to zero. This is the pause: a cell that has just moved cannot move again until 20 fresh accepted tickets and 20 fresh near-misses exist, which is the same discipline as 9.2.3's two-closed-bar pause expressed in evidence rather than bars. Resetting is also what makes the comparison honest after a move, because the near-miss population is defined against the new bar.
+8. **Freeze while a trade is open.** The bar is already frozen for the duration of a position by 9.2.3's guard rail. A move decided while a position lives is written to the file and journaled, and takes effect at the next closed candle after the position closes.
+9. **One move per cell per decision.** Cells are independent; two moods may move on the same candle, and each is journaled separately.
+
+### 23.7 The record — `<symbol>_<TF>.params`
+
+**Builder's decision (2026-10-11), the author's question answered.** The learned data lives **in the learning folder, one file per symbol and timeframe**, beside the learning record — but as a **sibling file with its own suffix**, not as new lines inside `.learn`. Two reasons, both structural:
+
+1. **Different lifetimes.** `.learn` is capped at 500 tickets and drops the oldest closed one to make room (19.3). The learned bar is the *accumulated* evidence and must outlive that window, or every 500 trades would erase what Emtt learned.
+2. **Isolation.** A damaged ticket line, a cap rewrite or an unknown version in `.learn` must never be able to destroy a learned value. Separate files mean the 19.3 failure rules and the 23.7 failure rules cannot touch each other.
+
+This is the pattern the author already approved once: the panel revamp put the Summary counts in the same folder under `.summary` precisely so they "never collide with the Phase 7 `.learn` record" (section 6). `.params` is the third suffix, not a new idea. If the author prefers one file, the safe variant is a version bump to `Emtt_Learning v2`, a never-drop rule for the parameter lines, and a cap counted over ticket lines only — one word from the author and 23.7 is rewritten that way.
+
+**Where.** `MQL5\Files\Emtt_Learning\<symbol>_<timeframe>.params` — the same folder, the same `FolderCreate()`, the same sanitiser as 19.3 (every character outside `A-Z a-z 0-9 _ - .` replaced by `_`, broker suffixes included). Examples: `EURUSD_M15.params`, `XAUUSD.pro_M30.params`.
+
+**Shape.** ASCII text, `\r\n` line ends, exactly six lines:
+
+```
+Emtt_Params v1 | XAUUSD.pro | M15
+counts tickets 412 | near 187 | labeled 355 | moves 2 | updated 2026.10.11 14:35
+cell TRENDING | bar 60 | base 60 | accepted 88/12 | near 41/9 | moves 1
+cell RANGING | bar 70 | base 70 | accepted 120/45 | near 62/30 | moves 0
+cell VOLATILE | bar 70 | base 70 | accepted 55/28 | near 30/19 | moves 0
+cell TRANSITION | bar 75 | base 75 | accepted 34/15 | near 12/8 | moves 0
+```
+
+- Line 1 is the version and the file's own symbol and timeframe. Only `v1` is read.
+- Line 2 is a reader summary, recomputed from the four cell lines on load; a line 2 that disagrees is ignored and rewritten.
+- One line per mood, always all four, in the fixed order above. `bar` is the learned bar, `base` the 9.2.4 value it started from, `accepted` and `near` the wins / losses since the last decision, `moves` the number of decisions taken.
+- **Written whole** into `<name>.tmp` and renamed over the real file with `FileMove(..., FILE_REWRITE)` — exactly the 19.3 discipline, so a crash or a second instance never leaves a half-written file, and a leftover `.tmp` found at init is deleted.
+- **When written:** at init immediately after the load; on any move or held move; and on deinit. Never per tick, never per timer.
+
+**Failure handling.** Any failed file call is journaled once (`Emtt | Param file busy | learning kept in memory | bar <time>`, then `Emtt | Param file write recovered | bar <time>` on the first success); the cells stay in memory and the retry happens at the next write event. Learning never stalls or stops the EA. An unknown version leaves the file untouched and runs the session from the base bars, journaled once. A malformed cell line is skipped and that one cell starts fresh from its base, journaled once per session; the other three cells are kept. A missing file is a fresh start: `Emtt | Param optimization started | no file yet | <path>`, and the base bars apply until the evidence of 23.6 says otherwise.
+
+### 23.8 Determinism, journal, the ticket part and the panel
+
+- **Determinism.** The tallies advance only on a labeled ticket or a labeled near-miss, in candle order, on the live path only (23.2 rule 3). Given the same `.params` file and the same closed candles, the moves and the bar are identical. A restart re-reads the file and continues; it never replays history into the tallies. The learned bar is frozen for the session (23.2 rule 4), so the replay and the live path resolve the same gate.
+- **Journal** — the existing `PrintFormat` channel, shape `Emtt | <what> | <detail> | bar <time>`, on decisions and near-miss events only:
+  - `Emtt | Param optimization started | no file yet | MQL5\Files\Emtt_Learning\EURUSD_M15.params`
+  - `Emtt | Param optimization loaded | 4 cells | 2 moves | TRENDING bar 60 (base 60) | RANGING bar 70 | VOLATILE bar 70 | TRANSITION bar 75`
+  - `Emtt | Near miss started | BUY | confidence 63%, bar 70% | entry 1.08450 | stop 1.08280 | target 1.09120 | RR 1:3.9 | bar 2026.10.11 10:00`
+  - `Emtt | Near miss replaced | SELL | confidence 62%, bar 70% | bar 2026.10.11 11:30`
+  - `Emtt | Near miss result | target | +670 pts | 12 candles | RANGING near 41/9 | bar 2026.10.11 12:00`
+  - `Emtt | Param bar moved | RANGING 70 -> 60 | accepted 120/45 (73%), near 62/30 (67%) | bar 2026.10.11 12:00`
+  - `Emtt | Param bar held | TRENDING at the approved limit 60 | accepted 88/12, near 41/9 | bar 2026.10.11 12:00`
+  - `Emtt | Param file busy | learning kept in memory | bar 2026.10.11 12:00`
+- **Never journaled:** a repeated state, a near-miss watch that did not change, a tally increment with no result, and any candle where nothing happened.
+- **The ticket `par` part (extends 19.3, only when the input is `true`).** A plan line gains one part at its start, recording the resolved set Emtt was actually using — read-only evidence for the author, never read back by the model and never used by 23.6:
+  ` | par atr 21 er 21 kama 13,26,50 stwin 75 vfwin 300 bar 70 rrmin 2.0`
+  The 16 features, the weights, the SGD step, the warm-up and the labels of 19.4–19.5 are untouched, and a Phase 8 reader that meets the part ignores it. With the input `false` the part is not written and the grammar is byte-identical to Phase 8.
+- **Panel: nothing changes.** No new row, no new colour, no width or font change, no glyph. Row 3's number, Row 10's reasons and the Summary rows are exactly as Phases 6–8 built them; the bar that Row 10 quotes in `Watching — confidence NN%, below the MM% bar.` is now the learned bar, which is the only visible trace of this phase, and it is correct because it is the bar Emtt really used. Everything else is in the journal and the file.
+
+### 23.9 Parameter rows Phase 9 adds to the table of 9.2.3
+
+| Parameter | Base | Class | Layer 1 (class) | Layer 2 (timeframe) | Layer 3 (bucket) | Layer 4 (regime) | Layer 5 (learned) |
+|---|---|---|---|---|---|---|---|
+| Confidence bar | 60 / 70 / 70 / 75 by mood | **Strictness** | not adjusted | not adjusted | not adjusted | the mood picks the base | the learned bar of 23.6 replaces it, inside the candidate set 60 / 70 / 75 |
+
+- **Guard rail (9.2.3):** the bar is frozen while a position lives, and the stay margin of 17.5 row h reads the learned bar, so the 5-point margin always sits below the bar actually in force.
+- **No new history gate.** The near-miss uses readings the 302 / 377 / 402 gate of 15.11 already covers; the file needs no history.
+- **Every other row of 9.2.3, 11.7, 13.10, 15.11, 17.5, 19.8 and 21.14 is unchanged**, and the measurement rows are frozen by 23.4.
+
+### 23.10 Tests, gates and guards
+
+`tests/phase9_reference.py` mirrors 23.4–23.8, and `tests/test_phase9_reference.py` asserts, without MT5:
+- the input: `false` gives byte-identical Phase 8 behaviour — no file, no near-miss, the base bars, no `par` part; `true` enables all of it; toggling never deletes a file;
+- the near-miss: each of the four conditions of 23.5 required, the 10-point band at its edges, a plan-build failure rejecting it, a candle that just ended a plan rejecting it, the replacement rule, and the paper result labels — `target` a win, `stop` a loss, everything else no tally;
+- the rule: each of 23.6's branches — the 20 / 20 wait at 19 and at 20 samples, the loosen edge at exactly `rateA - 0.05`, the tighten edge at exactly `rateA - 0.20`, the hold between them, one step per move, the clamp at 60 and at 75 with the held-move journal, the tally reset after a move **and** after a held move, and the freeze while a position lives;
+- the cells: the four moods independent, two moving on one candle, the mood read at the start candle and never revised;
+- the file: the six-line grammar round-trip, the version line, the reader summary recomputed and a disagreeing line 2 ignored, a malformed cell line starting only that cell fresh, an unknown version leaving the file untouched, a missing file starting fresh, the `.tmp` rename, and the write events of 23.7;
+- determinism: the same file plus the same candles give the same bar; a restart continues without re-learning; the replay adds no tally;
+- the ticket `par` part: written only when the input is `true`, ignored by a Phase 8 reader, and never read by the model or by 23.6.
+
+`tools/mql5_compile_smoke.py` gains the two headers with the markers `EMTT_POPT_SUFFIX ".params"`, `EMTT_POPT_MIN_SAMPLES 20`, `EMTT_POPT_NEAR_BAND 10`, `EMTT_POPT_LOOSE 0.05`, `EMTT_POPT_TIGHT 0.20`, the bar candidate set `60 / 70 / 75`, the input name and its `true` default, the include order `Emtt_ParamFile.mqh` then `Emtt_ParamOpt.mqh` after the learning includes and before `Emtt_Trade.mqh`, exactly one `SEmttParamOptState g_paramOpt;`, and the 23.3a edit — `EmttSignalAdvance`'s `const int learnedBar` argument and the single line that reads it in `Emtt_Signal.mqh`. It also carries the Phase 1 dashboard digest and every Phase 2–8 marker, unchanged.
+
+Guards:
+- the **chart-drawing guard** of 15.2 rule 1, applied to both new headers and the EA;
+- the **no-order guard** of 17.9 in full on both new headers — order tokens stay legal only in `Emtt_TradeManager.mqh` and `Experts/Emtt.mq5`;
+- the **ASCII guard** of 17.9 on both new headers;
+- the **file guard** of 19.10, widened exactly as the panel revamp widened it for `.summary`: the only suffixes Emtt may write are `.learn`, `.summary` and `.params`, all inside `Emtt_Learning\`; each file-writing header holds exactly one `.tmp` rename; no `GlobalVariable*`, no `FILE_COMMON`, no `FileDelete` / `FileCopy` / `FolderDelete`, no path outside the folder, and the EA still reaches the file system only through the headers;
+- the EA's GlobalVariable count stays at the Phase 2/6 baseline of 11 calls.
+
+### 23.11 Not in this phase
+
+No tuning of any measurement parameter (frozen by 23.4, with the structural reasons); no tuning of any management row (no counterfactual exists); no learning of the minimum Risk:Reward — a setup rejected for want of a target has no target to measure, so it has no outcome and cannot teach; no fractional blending and no value outside the candidate set; no alerts, sounds, push or email; no CSV export; no chart lines; no statistics panel; no tick-level CVD or divergence detection; no multiple positions, grids or hedging; no second symbol coordination; no pooling of evidence across symbols, timeframes or sessions — the file is per symbol and timeframe and stays that way; no new panel row; no change to any module outside 23.1.
+
+---
+
+## 24. Phase 9 — Done When
+
+**Status: SPEC WRITTEN (2026-10-11) — NOT YET BUILT.** Every bullet below must hold before the phase is called implemented. The portable bullets are proven by `python -m unittest discover -s tests -v`, `python tools/mql5_compile_smoke.py` and `python tools/mql5_parser_check.py`; the live-terminal bullets are the author's to confirm on a real MT5 chart, exactly as sections 10, 12, 14, 16, 18, 20 and 22 were, and the status stamps of this section are appended only when they pass.
+
+- The eleven Phase 1–8 modules outside 23.1 are byte-identical; `Emtt_Signal.mqh` carries only the 23.3a edit — the `learnedBar` argument and the one line that reads it — and `Emtt_LearnFile.mqh` and `Emtt_Learning.mqh` change only as 23.1 says; the inputs are the magic number, the new `Parameter optimization` directly below it, and the four of 21.3 under `Auto Trading`; no new chart-timeframe handle and no GlobalVariable exists.
+- `Emtt_ParamOpt.mqh` and `Emtt_ParamFile.mqh` are in the required-source set with every Phase 9 marker of 23.10, and the five guards hold — the file guard allowing exactly `.learn`, `.summary` and `.params` inside `Emtt_Learning\`.
+- With the input `false`, Emtt behaves exactly as Phase 8: no file created, read or written, no near-miss, the 9.2.4 bars, and no `par` part in the ticket.
+- With the input `true`, the bar moves only by 23.6 — one step inside 60 / 70 / 75, only after 20 accepted and 20 near-miss results, only on the loosen or tighten edge, never twice without the tally reset, and never while a position lives.
+- No measurement parameter changes anywhere, ever; the same closed bars still give the same regime, the same clusters, the same structure and the same flow on a restart, a timeframe round-trip and a chart replay.
+- A near-miss is never a signal: the Summary counts do not move, the Phase 7 model does not train on it, no plan or order appears, and the panel gains no row.
+- The replay adds no tally and evaluates no near-miss; a restart continues from the file instead of re-learning history.
+- The `.params` file appears only under `MQL5\Files\Emtt_Learning\`, in the six-line grammar of 23.7, written whole through a `.tmp` rename, only at the events of 23.7; a missing, damaged or unknown-version file is handled as 23.7 says and never stops the EA.
+- The ticket `par` part appears only when the input is `true`, is ignored by a Phase 8 reader, and is read by nothing.
+- Every move, held move, near-miss start, replacement, result and file failure is in the journal with its numbers, so the author can check each one without Emtt drawing anything.
+- **The EA still draws nothing but the panel**, and all panel objects are still removed cleanly when the EA is removed from the chart.
+- `python -m unittest discover -s tests -v` and `python tools/mql5_compile_smoke.py` pass, with the two new headers and markers in the CI contract and every Phase 2–8 marker still asserted.
+- `python tools/mql5_parser_check.py` exits `0` on the Phase 9 sources, with the built-in negative control rejected first (Hard Rule 3), and the sha256 and node counts recorded here at delivery, as in sections 8, 10, 12, 14, 16, 18, 20 and 22.
+- On a live M15 demo chart, the author confirms: (a) with the input OFF nothing new appears — no file, no journal line, the same numbers as Phase 8; (b) with it ON the `.params` file appears with its four mood lines and the load line is in the journal; (c) a near-miss journal line shows a confidence just under the bar, with an entry, stop, target and Risk:Reward that match the chart, and no order appears in the Trade tab; (d) a near-miss result lands with its points and candle count, and the cell's tallies in the file follow; (e) after 20 accepted and 20 near-miss results a bar moves by exactly one step, the journal shows both rates, and Row 10's `below the MM% bar` quotes the new number; (f) removing and re-attaching the EA, and restarting the terminal, resume from the file with the same bars; (g) deleting the file starts the cells fresh at their base bars on the next start; (h) the panel layout is unchanged, and the header still reads Auto Trading exactly as the input says.
+- On H1 and other charts rule 19 still holds: `--` fields, the red message, no near-miss, no move, and the Price Row still live.
