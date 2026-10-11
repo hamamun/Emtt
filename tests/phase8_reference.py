@@ -10,13 +10,12 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Iterable, Optional
 
-import phase6_reference as p6
 import phase7_reference as p7
-from phase2_reference import BEAR, BULL, RANGING, TRANSITION, VOLATILE
+from phase2_reference import BEAR, BULL, TRANSITION, VOLATILE
 
 # 21.14 fixed rows.
 RISK_PCT = 1.0
@@ -149,13 +148,19 @@ def risk_lots(balance: float, entry: float, stop: float, tick_size: float,
             confidence_size_multiplier(confidence) * news_multiplier)
 
 
+def normalize_price(value: float, digits: int) -> float:
+    """MQL5 NormalizeDouble: halves away from zero at the given digits."""
+    scale = 10 ** digits
+    return p7.mql_round(value * scale) / scale
+
+
 def floor_to_step(volume: float, step: float) -> float:
     if not math.isfinite(volume) or not math.isfinite(step) or volume <= 0 or step <= 0:
         return 0.0
     digits = next((d for d in range(9)
                    if abs(step - round(step, d)) < 1e-10), 8)
     floored = math.floor((volume + step * 1e-10) / step) * step
-    return round(floored, digits)
+    return normalize_price(floored, digits)
 
 
 def resolve_lots(mode: str, balance: float, entry: float, stop: float,
@@ -168,14 +173,14 @@ def resolve_lots(mode: str, balance: float, entry: float, stop: float,
     digits = next((d for d in range(9)
                    if abs(step - round(step, d)) < 1e-10), 8)
     if mode == MODE_MINIMUM:
-        return round(minimum, digits)
+        return normalize_price(minimum, digits)
     raw = risk_lots(balance, entry, stop, tick_size, tick_value,
                     confidence, news_multiplier)
     if raw <= 0:
         return 0.0
     lots = floor_to_step(raw, step)
     lots = max(minimum, min(maximum, lots))
-    return round(lots, digits)
+    return normalize_price(lots, digits)
 
 
 def money_for_distance(distance: float, lots: float,
@@ -222,15 +227,21 @@ def build_order(side: int, entry_kind: str, planned_entry: float,
         planned_entry < ask if side == BUY else planned_entry > bid)
     if pending:
         order_type = "BUY_LIMIT" if side == BUY else "SELL_LIMIT"
-        price = round(planned_entry, digits)
+        price = normalize_price(planned_entry, digits)
     else:
         order_type = "BUY" if side == BUY else "SELL"
-        price = round(ask if side == BUY else bid, digits)
+        price = normalize_price(ask if side == BUY else bid, digits)
     return OrderPlan(
         True, pending, side, order_type, 0.0, price,
-        round(stop, digits) if place_stop_loss else 0.0,
-        round(tp1, digits), place_stop_loss, True, False, "GTC",
+        normalize_price(stop, digits) if place_stop_loss else 0.0,
+        normalize_price(tp1, digits), place_stop_loss, True, False, "GTC",
     )
+
+
+def breakeven_event(place_stop_loss: bool) -> str:
+    """21.7: with no sent stop the first stop is attached at the trigger;
+    with a sent stop the existing one is moved to Entry."""
+    return "Breakeven moved" if place_stop_loss else "Breakeven attached"
 
 
 def breakeven_reached(side: int, entry: float, bar_high: float,
@@ -252,8 +263,8 @@ def partial_volume(volume: float, minimum: float, step: float) -> float:
                    if abs(step - round(step, d)) < 1e-10), 8)
     half = volume * PARTIAL_PCT / 100.0
     close_volume = math.floor(half / step + 0.5 - 1e-10) * step
-    close_volume = round(close_volume, digits)
-    remainder = round(volume - close_volume, digits)
+    close_volume = normalize_price(close_volume, digits)
+    remainder = normalize_price(volume - close_volume, digits)
     if close_volume < minimum or remainder < minimum or close_volume >= volume:
         return 0.0
     return close_volume
@@ -263,9 +274,9 @@ def expected_upper_minutes(estimate: int) -> int:
     if estimate <= 0:
         return 0
     if estimate < 120:
-        return round(1.5 * estimate / 5.0) * 5
+        return p7.mql_round(1.5 * estimate / 5.0) * 5
     if estimate <= 4320:
-        return max(1, round(1.5 * estimate / 60.0)) * 60
+        return max(1, p7.mql_round(1.5 * estimate / 60.0)) * 60
     return 4320
 
 
@@ -319,7 +330,7 @@ def trail_calculate(side: int, entry: float, current: float, tp1: float,
                     atr: float, timeframe: str, confidence: int, regime: str,
                     high_news: bool, highest_high: float = 0.0,
                     lowest_low: float = 0.0, swing_low: float = 0.0,
-                    swing_high: float = 0.0) -> TrailResult:
+                    swing_high: float = 0.0, has_swing: bool = True) -> TrailResult:
     if (side not in (BUY, SELL) or min(entry, tp1, atr) <= 0 or
             not all(math.isfinite(x) for x in (entry, current, tp1, atr))):
         return TrailResult(False)
@@ -340,6 +351,10 @@ def trail_calculate(side: int, entry: float, current: float, tp1: float,
         else:
             return TrailResult(False)
     elif method == "Fractal":
+        # 21.7: the Fractal method needs a confirmed swing point (13.3); the
+        # manager passes hasSwing from the SMC state, never an invented level.
+        if not has_swing:
+            return TrailResult(False)
         if side == BUY and swing_low > 0:
             raw = current - (swing_low - TRAIL_FRACTAL_BUFFER * atr)
         elif side == SELL and swing_high > 0:
@@ -391,6 +406,20 @@ def ordered_candidates(side: int, current: float,
 
 def level_future(side: int, price: float, current: float) -> bool:
     return price > current if side == BUY else price < current if side == SELL else False
+
+
+def initial_second_target(side: int, entry: float, current: float, tp1: float,
+                          items: Iterable[Candidate]) -> tuple[float, str]:
+    """21.6 / 21.8: TP2 is named at open, never sent to the broker.
+
+    The first ordered candidate strictly beyond TP1 and ahead of the current
+    price wins; ``(0.0, "")`` means there is no second candidate yet.
+    """
+    for item in ordered_candidates(side, current, items):
+        beyond = item.price > tp1 if side == BUY else item.price < tp1
+        if beyond and level_future(side, item.price, current):
+            return item.price, item.source
+    return 0.0, ""
 
 
 def targets_invariant(side: int, entry: float, current: float,
@@ -484,6 +513,45 @@ def time_exit_hold_text() -> str:
     return f"Holding {DASH} past expected duration, not in profit yet."
 
 
+def time_exit_hold_line(profit_points: float, bar_time: datetime) -> str:
+    """21.13: the hold line of the journal (21.9's state change only)."""
+    return (f"Emtt | Holding past expected duration | not in profit "
+            f"({signed_text(profit_points, 0)} pts) | bar {p7.fmt_time(bar_time)}")
+
+
+@dataclass
+class TimeExitJournal:
+    """17.8's discipline on 21.9's hold state: write it when it changes."""
+    holding: bool = False
+
+    def on_candle(self, *, age_minutes: int, upper_minutes: int, tp1_hit: bool,
+                  profit_points: float, bar_time: datetime) -> str:
+        holding = time_exit_hold(age_minutes, upper_minutes, tp1_hit,
+                                 profit_points)
+        line = ""
+        if holding and not self.holding:
+            line = time_exit_hold_line(profit_points, bar_time)
+        self.holding = holding
+        return line
+
+
+def signed_text(value: float, digits: int) -> str:
+    """EmttTradeManagerSigned: an explicit sign and the magnitude."""
+    sign = "+" if value >= 0.0 else "-"
+    return f"{sign}{abs(value):.{digits}f}"
+
+
+def money_text(amount: float, currency: str = "$") -> str:
+    """EmttTradeManagerMoney: the signed account-currency amount."""
+    sign = "+" if amount >= 0.0 else "-"
+    return f"{sign}{currency}{abs(amount):.2f}"
+
+
+def compact_duration(text: str) -> str:
+    """The panel's Expected Duration shape (EmttTradeManagerFillPanel)."""
+    return text.replace(" hours", "h").replace(" hour", "h").replace(" min", "m")
+
+
 @dataclass(frozen=True)
 class NewsEvent:
     name: str
@@ -511,6 +579,15 @@ def news_status(event_name: str, minutes: int, impact: int) -> str:
     size = news_size_multiplier(impact)
     size_text = "0.5" if size == 0.5 else "0.75"
     return f"News {DASH} {event_name} in {minutes} min ({impact_name} impact), size {size_text}x."
+
+
+def news_strongest(first_impact: int, second_impact: int) -> int:
+    """21.10: the strongest multiplier wins when windows overlap."""
+    return max(first_impact, second_impact)
+
+
+def news_trail_multiplier(impact: int) -> float:
+    return NEWS_TRAIL_MULT if impact == NEWS_HIGH else 1.0
 
 
 def read_news(events: Iterable[NewsEvent], now: datetime,
@@ -668,36 +745,81 @@ def protect_word(stop_exists: bool, breakeven: bool, method: str) -> str:
     return method
 
 
+DIAMOND_GLYPH = "\u25c6"  # the live-block header mark (Emtt_G_DIAMOND)
+
+
 def live_block(position: Optional[LivePosition], *, point: float,
-               digits: int, volume_digits: int, pending: bool = False) -> Optional[dict[str, str]]:
-    """Rows 11-14 exist for a position, never for a pending order alone."""
+               digits: int, volume_digits: int, timeframe_name: str = "M15",
+               currency: str = "$", pending: bool = False) -> Optional[dict[str, str]]:
+    """Rows 11-14 exist for a live position; a pending order alone shows
+    only Row 10 (21.12), so the block is None while nothing is filled."""
     if position is None or pending:
         return None
     side_name = "BUY" if position.side == BUY else "SELL"
     signed_points = ((position.current - position.entry) * position.side / point
                      if point > 0 else 0.0)
-    stop_points = (abs(position.current - position.stop) / point
-                   if point > 0 and position.stop > 0 else 0.0)
-    money = position.floating_money
-    floating_sign = "+" if money >= 0 else "-"
-    point_sign = "+" if signed_points >= 0 else "-"
-    stop_text = f"{position.stop:.{digits}f}" if position.stop > 0 else "--"
-    tp1_text = f"{position.tp1:.{digits}f}" if position.tp1 > 0 else "--"
-    tp2_text = f"{position.tp2:.{digits}f}" if position.tp2 > 0 else "--"
+    stop_points = (p7.mql_round(abs(position.current - position.stop) / point)
+                   if point > 0 and position.stop > 0 else 0)
+    stop_text = p7.fmt_price(position.stop, digits) if position.stop > 0 else "--"
+    tp1_text = p7.fmt_price(position.tp1, digits) if position.tp1 > 0 else "--"
+    tp2_text = p7.fmt_price(position.tp2, digits) if position.tp2 > 0 else "--"
     age = f"{position.age_minutes // 60:02d}:{position.age_minutes % 60:02d}"
     protect = protect_word(position.stop_exists, position.breakeven,
                            position.protect_method)
     return {
-        "header": "LIVE TRADE",
+        "header": f"{DIAMOND_GLYPH} LIVE TRADE {DASH} On {timeframe_name}",
         "ticket": (f"Ticket: {position.ticket} | {side_name} "
                    f"{position.volume:.{volume_digits}f} lots @ {position.entry:.{digits}f}"),
-        "floating": (f"Floating P/L: {floating_sign}{abs(money):.2f} "
-                     f"({point_sign}{abs(signed_points):.0f} pts)"),
+        "floating": (f"Floating P/L: {money_text(position.floating_money, currency)} "
+                     f"({signed_text(signed_points, 0)} pts)"),
         "live_sl": (f"Live SL: {stop_text} "
-                    f"({f'{stop_points:.0f}' if position.stop > 0 else '--'} pts) "
+                    f"({stop_points if position.stop > 0 else '--'} pts) "
                     f"| TP1: {tp1_text} TP2: {tp2_text}"),
         "protect": f"Protect: {protect} | Age: {age} / {position.expected_duration}",
     }
+
+
+#--- 21.12 the Row 10 status lines --------------------------------------
+
+def rejected_status(code: int) -> str:
+    return f"Order rejected {DASH} broker error {code}"
+
+
+def live_pending_status(price: float, digits: int) -> str:
+    return (f"Signal active {DASH} pending order at "
+            f"{p7.fmt_price(price, digits)}, waiting.")
+
+
+def live_position_status() -> str:
+    return f"Signal active {DASH} position open, managing."
+
+
+def fresh_tp1_status(protection_set: bool = True,
+                     skipped: bool = False) -> str:
+    body = "partial skipped" if skipped else "50% closed"
+    tail = "stop at breakeven." if protection_set else "protection update pending."
+    return f"TP1 hit {DASH} {body}, {tail}"
+
+
+def fresh_tp1_protection_status() -> str:
+    return f"TP1 hit {DASH} protection active at breakeven."
+
+
+def fresh_breakeven_status() -> str:
+    return f"Breakeven {DASH} stop at entry, trailing active."
+
+
+def fresh_trailing_status(price: float, locked_points: int, digits: int) -> str:
+    return (f"Trailing {DASH} stop at {p7.fmt_price(price, digits)}, "
+            f"+{locked_points} pts locked.")
+
+
+def fresh_position_closed_status(net_points: int, net_money: float,
+                                 currency: str = "$") -> str:
+    return (f"Position closed {DASH} {signed_text(net_points, 0)} pts "
+            f"({money_text(net_money, currency)}). "
+            f"Scanning for the next setup.")
+
 
 
 def panel_status(*, incompatible: str = "", loading: str = "",
