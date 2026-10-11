@@ -183,6 +183,8 @@ def check_contract(paths: list[Path]) -> None:
         "Include/Emtt/Emtt_TradePlan.mqh",
         "Include/Emtt/Emtt_Signal.mqh",
         "Include/Emtt/Emtt_Summary.mqh",
+        "Include/Emtt/Emtt_LearnFile.mqh",
+        "Include/Emtt/Emtt_Learning.mqh",
     }
     missing = required - relative
     if missing:
@@ -507,6 +509,135 @@ def check_contract(paths: list[Path]) -> None:
             raise RuntimeError(
                 f"Panel-revamp summary source contains forbidden file token: {pattern}"
             )
+
+
+    #--- Phase 7 (19.10) -------------------------------------------------
+    phase7_learn_file = (ROOT / "Include" / "Emtt" / "Emtt_LearnFile.mqh").read_text()
+    phase7_learning = (ROOT / "Include" / "Emtt" / "Emtt_Learning.mqh").read_text()
+    phase7_markers = (
+        (phase7_learning, r"EMTT_LEARN_FEATURES\s+16", "16-feature vector"),
+        (phase7_learning, r"EMTT_LEARN_WARMUP\s+30", "30-labeled-ticket warm-up"),
+        (phase7_learning, r"EMTT_LEARN_STRENGTH\s+0\.15", "0.15 learning strength"),
+        (phase7_learning, r"EMTT_LEARN_RATE\s+0\.30", "0.30 / sqrt(k) learning rate"),
+        (phase7_learning, r"EMTT_LEARN_CLAMP\s+4\.0", "weight clamp of +-4.0"),
+        (phase7_learning, r"EMTT_LEARN_Z_CLAMP\s+30", "logistic clamp of +-30"),
+        (phase7_learning, r"EMTT_LEARN_CONF_CAP\s+100", "confidence cap of 100"),
+        (phase7_learn_file, r"EMTT_LEARN_CAP\s+500", "500-ticket cap"),
+        (phase7_learn_file, r'EMTT_LEARN_VERSION\s+"Emtt_Learning v1"', "file version"),
+        (phase7_learn_file, r'EMTT_LEARN_DIR\s+"Emtt_Learning"', "file folder"),
+        (phase7_learn_file, r'EMTT_LEARN_EXT\s+"\.learn"', "file suffix"),
+        (phase7_learning, r"EmttLearnBuildModel\(", "SGD build from the tickets"),
+        (phase7_learning, r"EmttLearnWhyClause\(", "Row 9 clause text"),
+        (phase7_learning, r"EmttLearnHoldReason\(", "Row 10 learning WAIT reason"),
+        (phase7_learn_file, r"EmttLearnFileLoad\(", "load and recompute at init"),
+        (phase7_learn_file, r"EmttLearnFileSave\(", "whole-file rewrite"),
+        (phase7_learn_file, r"EmttLearnFileAddPlan\(", "plan start event"),
+        (phase7_learn_file, r"EmttLearnFileMarkReached\(", "entry reach event"),
+        (phase7_learn_file, r"EmttLearnFileCloseTicket\(", "plan end event"),
+        (ea, r'#include "\.\./Include/Emtt/Emtt_LearnFile\.mqh"', "quoted repo-relative learning-file include"),
+        (ea, r'#include "\.\./Include/Emtt/Emtt_Learning\.mqh"', "quoted repo-relative learning include"),
+        (ea, r"SEmttLearningState\s+g_learning;", "exactly one learning state instance"),
+        (ea, r"EmttLearningAttachAndLoad\(", "record bound and loaded by the replay"),
+        (ea, r"EmttLearningReadCandle\(", "learned terms read on each closed candle"),
+        (ea, r"EmttLearnPlanText\(", "plan-start journal learning part"),
+        (ea, r"EmttLearnWhyAppend\(", "Row 9 learning clause appended last"),
+        (ea, r"EmttLearningResume\(", "19.6 plan resume after the replay"),
+        (ea, r"EmttLearnJournalResumed\(", "Learning resumed journal line"),
+        (ea, r"EmttLearnFileSave\(g_learning\.file,", "the four write events save the record"),
+        (ea, r'#property version\s+"1\.60"', "Phase 7 version stamp"),
+        (ea, r'#property description "Phase 7: self-learning signal filter \(no orders\)\."',
+         "Phase 7 description line"),
+    )
+    for source, pattern, description in phase7_markers:
+        if not re.search(pattern, source):
+            raise RuntimeError(f"missing Phase-7 rule: {description}")
+    if len(re.findall(r"\bSEmttLearningState\s+g_learning\s*;", ea)) != 1:
+        raise RuntimeError("Phase 7 must declare exactly one EA learning state instance")
+    if ea.find("Emtt_Signal.mqh") > ea.find("Emtt_LearnFile.mqh"):
+        raise RuntimeError("Phase-7 learning-file include must follow Emtt_Signal.mqh")
+    if ea.find("Emtt_LearnFile.mqh") > ea.find("Emtt_Learning.mqh"):
+        raise RuntimeError("Phase-7 learning include must follow Emtt_LearnFile.mqh")
+    if phase7_learning.find("Emtt_LearnFile.mqh") > phase7_learning.find("Emtt_Signal.mqh"):
+        raise RuntimeError("Emtt_Learning.mqh must include the record before the signal")
+
+    # 19.10 guards 1-3 on the two new headers: no chart drawing (15.2 rule
+    # 1), no order token (17.9) and ASCII-only source (17.2 rule 9).
+    for path, name in (
+        (ROOT / "Include" / "Emtt" / "Emtt_LearnFile.mqh", "learning-file"),
+        (ROOT / "Include" / "Emtt" / "Emtt_Learning.mqh", "learning"),
+    ):
+        text = path.read_text(encoding="utf-8")
+        for pattern in forbidden_smc:
+            if re.search(pattern, text):
+                raise RuntimeError(
+                    f"Phase-7 {name} source contains forbidden chart drawing token: {pattern}"
+                )
+        for pattern in forbidden_orders:
+            if re.search(pattern, text):
+                raise RuntimeError(
+                    f"Phase-7 {name} source contains a forbidden order token: {pattern}"
+                )
+        raw = path.read_bytes()
+        for index, byte in enumerate(raw):
+            if byte > 0x7F:
+                line = raw.count(b"\n", 0, index) + 1
+                raise RuntimeError(
+                    f"Phase-7 {name} header is not ASCII-only: byte 0x{byte:02X} at line {line}"
+                )
+
+    # 19.10 guard 4: the file guard. The record is the only thing the phase
+    # writes, it lives only under Emtt_Learning\, the whole-file rewrite is
+    # the one .tmp rename, and nothing is deleted or copied.
+    for text, name in ((phase7_learn_file, "learning-file"),
+                       (phase7_learning, "learning")):
+        for pattern in (r"\bGlobalVariable\w*\s*\(", r"\bFileDelete\s*\(",
+                        r"\bFolderDelete\s*\(", r"\bFileCopy\s*\(",
+                        r"\bFolderCreate\s*\([^)]*\bFILE_COMMON\b",
+                        r"\bFILE_COMMON\b", r"\bTerminalInfoString\s*\(",
+                        r'\bFileOpen\s*\(\s*"'):
+            if re.search(pattern, text):
+                raise RuntimeError(
+                    f"Phase-7 {name} source contains forbidden file token: {pattern}"
+                )
+        moves = re.findall(r"\bFileMove\s*\([^;]*\)", text)
+        if name == "learning":
+            if moves:
+                raise RuntimeError("Phase-7 learning source must not move a file")
+        else:
+            if len(moves) != 1 or "FILE_REWRITE" not in moves[0]:
+                raise RuntimeError(
+                    "Phase-7 learning-file source must hold exactly one .tmp rename"
+                )
+            if "tmpPath" not in moves[0] or "state.filePath" not in moves[0]:
+                raise RuntimeError("Phase-7 .tmp rename must be the record's own rename")
+    # No path outside Emtt_Learning\: after every escape the grammar
+    # needs (the folder separator, the \r\n line ends and the \x2014 dash of
+    # 19.7) is stripped, no backslash may remain in any literal of either
+    # header, so no other folder or file name can be built.
+    escape_re = re.compile(r'\\(?:x[0-9A-Fa-f]{2,4}|[rnt\\])')
+    for text, name in ((phase7_learn_file, "learning-file"),
+                       (phase7_learning, "learning")):
+        for literal in re.findall(r'"([^"\n]*\[^"\n]*)"', text):
+            if chr(92) in escape_re.sub("", literal):
+                raise RuntimeError(
+                    f"Phase-7 {name} source builds a path outside Emtt_Learning\\: {literal!r}"
+                )
+    if re.search(r"\bFileMove\s*\([^)]*FILE_REWRITE", ea):
+        raise RuntimeError("the EA must not rewrite a file itself in Phase 7")
+    for pattern in (r"\bFileOpen\s*\(", r"\bFileWrite\w*\s*\(",
+                    r"\bFileRead\w*\s*\(", r"\bFileClose\s*\(",
+                    r"\bFileMove\s*\(", r"\bFileDelete\s*\(",
+                    r"\bFolderDelete\s*\(", r"\bFileCopy\s*\("):
+        if re.search(pattern, ea):
+            raise RuntimeError(
+                f"Phase-7 EA reaches the file system directly: {pattern}"
+            )
+    # No new GlobalVariable: the EA count stays at the Phase 2/6 baseline.
+    global_calls = re.findall(r"\bGlobalVariable\w*\s*\(", ea)
+    if len(global_calls) != 11:
+        raise RuntimeError(
+            "Phase-7 EA GlobalVariable use changed (Phase 2/6 baseline is 11 calls)"
+        )
 
 
 

@@ -97,6 +97,27 @@ active / WAIT-reason / level-passed lines, each plan line ending `No order place
 block stays hidden, the seven approved headers stay byte-identical, and the inputs are still
 Magic number + Auto Trading.
 
+## Phase 7 — Self-learning signal filter (implemented)
+
+`Include/Emtt/Emtt_LearnFile.mqh` keeps one small ASCII record per symbol and timeframe
+(`MQL5\Files\Emtt_Learning\<symbol>_<TF>.learn`, whole-file rewrite through a `.tmp` rename, cap
+500, oldest closed ticket dropped first) holding one line per plan — its 16 published readings at
+the start bar, its fixed levels and, once it resolves, its result. `Include/Emtt/Emtt_Learning.mqh`
+turns those lines into a 16-feature logistic model: bias plus one weight per feature, one SGD step
+per labeled ticket in file order at `0.30 / sqrt(k)`, weights clamped to ±4 and never stored,
+recomputed from the tickets on every load. The learned term `L = clamp(2p - 1, ±1)` is live only
+from the 30th labeled ticket; before that every number is exactly Phase 6, and the first warm candle
+does not step the number. It can trim or support the four-view number by at most 15 % and can never
+change the side. The record holds the open plan too, so a restart resumes the plan instead of losing
+it: the closed candles since its start bar are checked against its own levels with the worse-result
+order of 17.7, a candle that reached an end level ends the plan there, and a start bar that has
+fallen out of the copied history ends it as `chart`. Row 3's number is the only reading that
+changes; Row 10 gains `Watching — learning NN% holds this one back.` checked before the first 17.6
+reason, the stay margin reads the adjusted number, and — per the author's 2026-10-11 decision — the
+Row 9 learning clause is journal only, because the panel revamp retired that row. Writes happen only
+at init-after-load, a plan start, an entry reach and a plan end; and the phase still places no order,
+draws nothing and adds no input, panel row, chart handle or GlobalVariable.
+
 Run the portable checks with:
 
 ```sh
