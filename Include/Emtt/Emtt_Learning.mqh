@@ -183,6 +183,7 @@ void EmttLearnFeatures(const int side,const int confidenceNumber,
    x[13+volIndex]=1.0;
   }
 
+// 23.8: the grammar reads past `par`; the model deliberately ignores it.
 void EmttLearnFeaturesFromTicket(const SEmttLearnTicket &ticket,
                                  double &x[])
   {

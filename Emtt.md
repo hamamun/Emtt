@@ -2982,3 +2982,56 @@ No tuning of any measurement parameter (frozen by 23.4, with the structural reas
 - `python tools/mql5_parser_check.py` exits `0` on the Phase 9 sources, with the built-in negative control rejected first (Hard Rule 3), and the sha256 and node counts recorded here at delivery, as in sections 8, 10, 12, 14, 16, 18, 20 and 22.
 - On a live M15 demo chart, the author confirms: (a) with the input OFF nothing new appears — no file, no journal line, the same numbers as Phase 8; (b) with it ON the `.params` file appears with its four mood lines and the load line is in the journal; (c) a near-miss journal line shows a confidence just under the bar, with an entry, stop, target and Risk:Reward that match the chart, and no order appears in the Trade tab; (d) a near-miss result lands with its points and candle count, and the cell's tallies in the file follow; (e) after 20 accepted and 20 near-miss results a bar moves by exactly one step, the journal shows both rates, and Row 10's `below the MM% bar` quotes the new number; (f) removing and re-attaching the EA, and restarting the terminal, resume from the file with the same bars; (g) deleting the file starts the cells fresh at their base bars on the next start; (h) the panel layout is unchanged, and the header still reads Auto Trading exactly as the input says.
 - On H1 and other charts rule 19 still holds: `--` fields, the red message, no near-miss, no move, and the Price Row still live.
+
+
+### Phase 9 delivery evidence — v1.70 (2026-10-11)
+
+**Build status: CODE DELIVERED — portable gates passed; native MetaEditor compilation and the author's live-terminal acceptance are still pending.** The complete §23.1 source/test change set is delivered together, not split into sub-phases. This stamp supersedes the earlier “not yet built” state for the source work only. It does **not** close the live bullets above or claim that Phase 9 has been accepted in MT5.
+
+**Delivered scope.** Version `1.70`, the Phase 9 description, the default-ON input in its required position, four independent mood cells, the private closed-candle near-miss lifecycle, existing paper/real-net labels, the 20/20 inclusive decision rule, candidate-only moves and held moves, next-live-candle application, entry-frozen strictness, the six-line `.params` sibling, and author-only start-ticket `par` metadata are wired into the EA. Unknown versions stay untouched and keep base bars for the session; cell damage is local; failed reads cannot overwrite unread data; write/flush/close failures cannot replace the destination. Pending, already-labeled live broker outcomes are folded before deinit without watching a candle or making a decision, including original-timeframe outcomes carried onto H1. Source symbols (including broker suffixes) must match exactly, so no other symbol's evidence enters a cell. An unresolved near-miss is deliberately lost at restart.
+
+**Scope proof.** All eleven protected headers of §23.1 remain byte-identical to the Phase 8 tree. Reversing only the added `learnedBar` argument and its one gate assignment recovers the original `Emtt_Signal.mqh` sha256 `3ef858d8261338f5d78013ec3c3b9ac8787dd7b1a80d23c5c0d2373ceeb6cb92`. Removing the single ignore-metadata comment recovers the original `Emtt_Learning.mqh` sha256 `2bd1c3eae2f85d1b9a939423470ba5d816a84428cadf983595b66db9c5e08acd`; its model code is unchanged. No measurement or management row, chart object, handle, alert, export, or order is added by the optimizer. The existing entry snapshot is reused to restore the actual confidence bar before the unchanged trade manager runs; ticket `par` values are never decision inputs. EA handle-call counts remain `iATR = 5`, `iAMA = 6`, `iBands = 1`, and GlobalVariable API calls remain **11**. Sections 1–22 and the Phase 9 specification/checklist above are not rewritten.
+
+**Recorded implementation readings of the specification.**
+
+- Persistence follows the explicit §23.7 event list (also required by §24): init immediately after load, a move or held move, and deinit. §23.2 rule 7 additionally mentions tally changes; this build keeps a tally-only change in memory until the next enumerated write event, rather than adding a fourth event. Thus a tally-only near result is visible in the journal immediately and in the file at the next decision/deinit. Normal deinit drains queued labeled outcomes; an abrupt terminal/process failure without deinit can lose unsaved interim tallies, as with any memory-only interval.
+- A stale `.tmp` is consumed by truncate/rewrite and the own-file atomic rename, as in §19.3. No `FileDelete` is used, respecting §23.10's deletion guard despite §23.7's literal “deleted” wording. An unknown-version record and its `.tmp` remain untouched.
+- Line 2 is advisory and derived from the four cells, not the inconsistent illustrative totals: `tickets = Σ(aW+aL)`, `near = Σ(nW+nL)`, `labeled = tickets+near`, `moves = Σ(moves)`. Tallies are since the last decision, not lifetime counts. Only `moves` survives a moved/held decision.
+- The near band uses the actual learning-adjusted signal confidence and bar in force, matching the real gate after §19.5; it does not recompute or alter the four views. Ticket `stwin` records the actual SMC structure window, not the Supertrend K-Means window. Optional metadata integers are strictly positive decimal integers within `INT_MAX`; bad/empty/overflowing metadata is ignored without discarding valid ticket features or labels.
+
+**Portable gate results (executed on this delivery tree).**
+
+| Gate | Result |
+|---|---|
+| `python -m unittest discover -s tests -v` | **522 tests, 6.859 s, OK** — the 404 existing Phase 2–8 tests plus **118 Phase 9 tests** |
+| `python tools/mql5_compile_smoke.py` | **exit 0**, all **17** repository MQL sources in the include graph; Phase 2–8 markers and Phase 9 scope/file/pure-logic guards pass |
+| `python tools/mql5_parser_check.py` | **exit 0**, all **17** sources, **0 syntax errors**; negative control rejected first (**1 error node**), positive control accepted |
+| `git diff --check` | **exit 0** |
+| Native MetaEditor compilation | **Not executed** — `METAEDITOR_PATH` unset; MetaEditor/Wine not available in this workspace |
+| Author's M15/H1 live-terminal acceptance | **Pending**, not asserted by portable tests |
+
+The Phase 9 mirror covers every required §23.10 branch, all **441** win-pair combinations at 20/20 samples, unequal sample sizes, source mood/symbol/timeframe separation, deduplication, next-candle and position freeze, OFF and replay non-effects, near-miss lifecycle and unchanged builder failures, file damage/version/atomic-failure/recovery cases (including original disappearance during busy-read recovery), shutdown durability, and metadata-only behavior. Mutation controls reject extra order/drawing/file/global/clock/randomness APIs, non-ASCII source, frozen-module edits, extra Signal/model edits, wrong input/suffix/candidates, and a fourth writable suffix. These are MT5-free reference and source-contract proofs, **not native execution of the MQL logic**.
+
+**Parser identities.** Grammar `mskelton/tree-sitter-mql5` pinned at `3e4c4fdc5d42b1ec650bf5e6b5464017d05bcccf`, with `tree-sitter 0.26.0`. Every row below returned `has_error=False` and `errors=0`. Full sha256 values are of the delivered file bytes; node counts are from the successful parser run. Parsing proves syntax only; native types, built-in signatures, format specifiers and broker/file behavior still require MetaEditor and MT5.
+
+| Source | SHA-256 | Parser nodes |
+|---|---|---:|
+| `Experts/Emtt.mq5` | `38fdf926f08f8dbac9a81649715c16e073e7dbee137181edb78fefc83741f5f8` | 22073 |
+| `Include/Emtt/Emtt_Dashboard.mqh` | `22392551ed94bb3c38badea5b74e589c5d90f6ca75f41d8cb4ced541b4077b70` | 3468 |
+| `Include/Emtt/Emtt_DynamicParams.mqh` | `24bd3519a4dccd6414474e6ff5854f9042a4237e96dd058ac4cccbde368ffdb8` | 5155 |
+| `Include/Emtt/Emtt_LearnFile.mqh` | `08ec0b308a3b1ba321e652ea657739eb884c7b41b42d72d6132fdd6e36ea2f5f` | 9125 |
+| `Include/Emtt/Emtt_Learning.mqh` | `936289a3709cbb61ca961567f53c36b632efded9e0672fd9d9e3e4882373b773` | 4270 |
+| `Include/Emtt/Emtt_MTF.mqh` | `e12d61226ce59eb29a0a2ed8855e7eb7feeb59a3407f21cfcf9a6528a7665a88` | 8729 |
+| `Include/Emtt/Emtt_ParamFile.mqh` | `051586fe54e02fdfe0114c9c29a7a9c073840377480cce2b561f910f6a1f153a` | 3576 |
+| `Include/Emtt/Emtt_ParamOpt.mqh` | `854845beb8a5d26a4c153c740d6b6eb859bcc564c04f7247b8d6f03b31233f22` | 3922 |
+| `Include/Emtt/Emtt_Regime.mqh` | `d62dcf089a7baf51e7d40e68b8c960ecc1327735e7be630652f39edc8a97c01d` | 4021 |
+| `Include/Emtt/Emtt_SMC.mqh` | `1691c923927429979c369be2c62e14b89afc834764f36f7fea33da6bc7146324` | 17201 |
+| `Include/Emtt/Emtt_Signal.mqh` | `434b27bda44a7985a4126bec1cc0a133c721cc249d8c1e76d61f9d6b1e1582fe` | 4819 |
+| `Include/Emtt/Emtt_Summary.mqh` | `ade2b7e66f647c7595ef03d9bbf6640fdd19b2317f357678a474d6a1537e98f1` | 3473 |
+| `Include/Emtt/Emtt_Supertrend.mqh` | `6b2d6a97abb7f4e683499da73d9012986da40f54dd013102daf83a6e5a115888` | 6654 |
+| `Include/Emtt/Emtt_Trade.mqh` | `00eee02dc193fd4674483ab8b78d2b2bad9e0c2fdda83706f969f6451dbc2eb4` | 7388 |
+| `Include/Emtt/Emtt_TradeManager.mqh` | `8cb5dd5e3466440b8ecc8f3913df99dc6ad783678561676b89caaa43d5b1b974` | 16654 |
+| `Include/Emtt/Emtt_TradePlan.mqh` | `e52a6005ff2ef2a7e75cef3c847c7ee80504bbf73fd6aa7028b03103fe2ba415` | 2573 |
+| `Include/Emtt/Emtt_VolumeFlow.mqh` | `5f311e6fa62bc67f4235e9316cf9a4f295354487f3f77d3b54d16d571f0e2eb3` | 8648 |
+
+**Remaining acceptance boundary.** Compile `Experts/Emtt.mq5` in MetaEditor, then confirm the live M15 demo checklist (a)–(h), the open-position freeze/restart behavior, file failures/recovery, unchanged panel/removal, and H1's incompatible-chart behavior in the checklist above. No live-terminal approval is recorded by this delivery stamp. Phase 9 remains awaiting that native/author acceptance before its overall “Done When” status can be closed.
