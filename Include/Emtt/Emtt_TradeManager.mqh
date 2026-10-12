@@ -1063,6 +1063,15 @@ void EmttTradeManagerHistoryExtremes(SEmttTradeState &state,
      }
   }
 
+void EmttTradeManagerSetGateStatus(SEmttTradeState &state,
+                                   const string reason,const datetime barTime)
+  {
+   if(reason!=state.gateStatus)
+      PrintFormat("Emtt | Trade gate | %s | bar %s",reason,
+                  EmttTradeManagerTimeText(barTime));
+   state.gateStatus=reason;
+  }
+
 bool EmttTradeManagerSendOrder(SEmttTradeState &state,
                                const SEmttTradeRuntime &runtime,
                                const SEmttTradePlan &plan,
@@ -1088,7 +1097,8 @@ bool EmttTradeManagerSendOrder(SEmttTradeState &state,
       if(state.pendingBlockFarEdge<=0.0 || closed<=0.0 ||
          plan.side*(closed-state.pendingBlockFarEdge)<0.0)
         {
-         state.gateStatus="No trade - originating order block unavailable or invalidated";
+         EmttTradeManagerSetGateStatus(state,
+            "No trade - originating order block unavailable or invalidated",barTime);
          return false;
         }
       const datetime eligible=plan.startBarTime+PeriodSeconds(runtime.timeframe);
@@ -1097,7 +1107,8 @@ bool EmttTradeManagerSendOrder(SEmttTradeState &state,
       if(expiry<=now)
         {
          EmttPendingRetire(state,runtime.timeframe,plan.side,plan.entry);
-         state.gateStatus="No trade - entry validity already expired";
+         EmttTradeManagerSetGateStatus(state,
+            "No trade - entry validity already expired",barTime);
          return false;
         }
       const long modes=SymbolInfoInteger(runtime.symbol,SYMBOL_EXPIRATION_MODE);
@@ -1105,13 +1116,15 @@ bool EmttTradeManagerSendOrder(SEmttTradeState &state,
          pendingTime=ORDER_TIME_SPECIFIED;
       else if((modes & SYMBOL_EXPIRATION_GTC)==0)
         {
-         state.gateStatus="No trade - broker cannot support requested pending lifetime";
+         EmttTradeManagerSetGateStatus(state,
+            "No trade - broker cannot support requested pending lifetime",barTime);
          return false;
         }
       if(!EmttPendingSaveLease(state,runtime,plan,smc,expiry,now) ||
          !EmttPendingRetire(state,runtime.timeframe,plan.side,plan.entry))
         {
-         state.gateStatus="No trade - cannot persist pending execution lease";
+         EmttTradeManagerSetGateStatus(state,
+            "No trade - cannot persist pending execution lease",barTime);
          return false;
         }
       // Retired before sending: ambiguous submission failures must never
@@ -1641,26 +1654,47 @@ void EmttTradeManagerSetSignalPlan(SEmttTradeState &state,
       EmttTradeManagerCancelPending(state,"new plan replaced it",runtime.barTime);
   }
 
+// A visible signal is not proof that the broker execution inputs are ready.
+// Report the first missing prerequisite instead of returning silently.
+string EmttTradeManagerEntryReadiness(const SEmttTradeRuntime &runtime)
+  {
+   if(!runtime.chartCompatible) return "No trade - incompatible chart timeframe";
+   if(!runtime.connected) return "No trade - terminal disconnected";
+   if(!runtime.learningLoaded) return "No trade - learning file not ready";
+   if(!runtime.analysisReady || runtime.confidence<0 || runtime.barTime<=0)
+      return "No trade - closed-bar analysis not ready";
+   if(!runtime.quoteFresh) return "No trade - fresh broker quote unavailable";
+   return "";
+  }
+
 void EmttTradeManagerTryOrder(SEmttTradeState &state,
                               const SEmttTradeRuntime &runtime,
                               const SEmttTradePlan &plan,
                               const SEmttSmcState &smc,
                               const SEmttVolumeFlowState &vf)
   {
-   if(!runtime.chartCompatible || !runtime.learningLoaded ||
-      !runtime.analysisReady || !runtime.connected || !runtime.quoteFresh ||
-      !plan.active || runtime.confidence<0 || runtime.barTime<=0)
+   if(!plan.active)
      {
-      if(!plan.active)
-         state.gateStatus="";
+      state.gateStatus="";
+      return;
+     }
+   const string readiness=EmttTradeManagerEntryReadiness(runtime);
+   if(readiness!="")
+     {
+      EmttTradeManagerSetGateStatus(state,readiness,runtime.barTime);
       return;
      }
    if(plan.side!=1 && plan.side!=-1)
+     {
+      EmttTradeManagerSetGateStatus(state,"No trade - invalid plan direction",
+                                    runtime.barTime);
       return;
+     }
    if(plan.entryKind==EMTT_PLAN_ENTRY_BLOCK &&
       EmttPendingRetired(state,runtime.timeframe,plan.side,plan.entry,runtime.point))
      {
-      state.gateStatus="No trade - this order-block execution attempt is retired";
+      EmttTradeManagerSetGateStatus(state,
+         "No trade - this order-block execution attempt is retired",runtime.barTime);
       return;
      }
    if(state.lastAttemptBarTime==runtime.barTime)
@@ -1671,7 +1705,11 @@ void EmttTradeManagerTryOrder(SEmttTradeState &state,
 
    EmttTradeManagerSetSignalPlan(state,runtime,plan,smc,vf);
    if(!state.hasPlanContext)
+     {
+      EmttTradeManagerSetGateStatus(state,"No trade - plan context unavailable",
+                                    runtime.barTime);
       return;
+     }
 
    const int digits=runtime.digits;
    const double currentSpread=(runtime.point>0.0 ?
@@ -1694,7 +1732,8 @@ void EmttTradeManagerTryOrder(SEmttTradeState &state,
    if(!EmttTradeBuildOrder(plan.side,plan.entryKind,plan.entry,plan.stop,
          plan.target,runtime.bid,runtime.ask,runtime.placeStopLoss,digits,order))
      {
-      state.gateStatus="No trade "+EmttTradeDash()+" invalid plan levels";
+      EmttTradeManagerSetGateStatus(state,
+         "No trade "+EmttTradeDash()+" invalid plan levels",runtime.barTime);
       return;
      }
 
@@ -1711,7 +1750,8 @@ void EmttTradeManagerTryOrder(SEmttTradeState &state,
       state.newsSizeMultiplier,minimum,maximum,step);
    if(lots<=0.0)
      {
-      state.gateStatus="No trade "+EmttTradeDash()+" invalid lot sizing";
+      EmttTradeManagerSetGateStatus(state,
+         "No trade "+EmttTradeDash()+" invalid lot sizing",runtime.barTime);
       return;
      }
    order.volume=lots;

@@ -63,7 +63,7 @@ datetime EmttPendingDeadline(const datetime eligibleAt,const int periodSeconds,
    long lifetime=(long)periodSeconds*EmttPendingBars(bars);
    if(expectedUpperMinutes>0 && (long)expectedUpperMinutes*60<lifetime)
       lifetime=(long)expectedUpperMinutes*60;
-   return eligibleAt+lifetime;
+   return (datetime)(eligibleAt+lifetime);
   }
 
 EEmttPendingReason EmttPendingDecision(const SEmttPendingCheck &c)

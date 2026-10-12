@@ -644,6 +644,12 @@ bool EmttReplayClosedHistory()
                g_dynamic.kamaSlow,g_dynamic.confidenceThreshold,
                EmttRegimeName(g_snapshotRegime),
                TimeToString(g_snapshotBarTime,TIME_DATE|TIME_MINUTES));
+   PrintFormat("Emtt | Regime %s | ER %.1f | KAMA %s | ATR ratio %.2f | bar %s",
+               EmttRegimeName(g_snapshotRegime),g_snapshotMeasurements.efficiency,
+               (g_snapshotMeasurements.direction>0 ? "up" :
+                (g_snapshotMeasurements.direction<0 ? "down" : "mixed")),
+               g_snapshotMeasurements.atrRatio,
+               TimeToString(g_snapshotBarTime,TIME_DATE|TIME_MINUTES));
    if(g_supertrend.ready)
       PrintFormat("Emtt | Supertrend replayed | window %d closed bars (%s x%.2f) | ATR period %d | cluster %s | multiplier %s | direction %s | score %.2f | bar %s",
                   g_supertrend.window,TfName(g_timeframe),
@@ -867,8 +873,16 @@ bool EmttProcessLatestClosedBar(const bool forceFirstEvaluation)
    if(periodSeconds<1) periodSeconds=1;
    const bool afterGap=(g_lastClosedBarTime>0 &&
                         (long)(barTime-g_lastClosedBarTime)>(long)(2*periodSeconds));
+   const EEmttRegime previousRegime=g_regimeState.stable;
    const EEmttRegime regime=EmttRegimeAdvance(g_regimeState,measurements,
                            forceFirstEvaluation || afterGap);
+   if(regime!=previousRegime || forceFirstEvaluation || afterGap)
+      PrintFormat("Emtt | Regime %s | ER %.1f | KAMA %s | ATR ratio %.2f | bar %s",
+                  EmttRegimeName(regime),measurements.efficiency,
+                  (measurements.direction>0 ? "up" :
+                   (measurements.direction<0 ? "down" : "mixed")),
+                  measurements.atrRatio,
+                  TimeToString(barTime,TIME_DATE|TIME_MINUTES));
    EmttDynamicUpdateThreshold(g_dynamic,regime,sequence,barTime,true);
 
    // Phase 3: after the bucket / atrPeriod of this bar, before the snapshot.
@@ -1905,6 +1919,22 @@ void EmttTradeManagerPanelStatus(SEmttPanelData &data)
       status=g_trade.freshStatus;
    else if(g_trade.holdStatus!="")
       status=g_trade.holdStatus;
+   // A cancelled/retired broker attempt must not look like an entry still
+   // waiting to be submitted after the paper plan is restored on attach.
+   else if(!g_trade.pendingOrder && !g_trade.positionOpen &&
+           g_signal.plan.active &&
+           g_signal.plan.entryKind==EMTT_PLAN_ENTRY_BLOCK &&
+           (g_trade.gateStatus=="" ||
+            g_trade.gateStatus=="No trade - this order-block execution attempt is retired") &&
+           EmttPendingRetired(g_trade,g_timeframe,g_signal.plan.side,
+                              g_signal.plan.entry,
+                              SymbolInfoDouble(g_symbol,SYMBOL_POINT)))
+      status="No trade - entry attempt ended; new setup needed.";
+   // When flat, the concrete reason an active plan cannot trade is more
+   // useful than an informational news note.
+   else if(g_trade.gateStatus!="" && !g_trade.pendingOrder &&
+           !g_trade.positionOpen && g_signal.plan.active)
+      status=g_trade.gateStatus;
    else if(g_trade.newsStatus!="")
       status=g_trade.newsStatus;
    else if(g_trade.gateStatus!="")
@@ -2460,6 +2490,11 @@ void FillPanel(SEmttPanelData &d)
          if(sigReady)
            {
             d.status=EmttSignalStatusText(g_signal,bid,ask);
+            // The signal's pending plan is not a broker order. Keep this
+            // one-line panel message short enough for ordinary chart widths;
+            // the trade manager below supplies the actual order status.
+            if(StringFind(d.status,"waiting for price to reach entry")>=0)
+               d.status="Signal plan - entry not reached yet.";
             // Phase 7 (19.7): the one WAIT reason Phase 7 adds is checked
             // before the first reason of 17.6, so that reason can never
             // hide the cause. The stay-margin line above is unchanged and
