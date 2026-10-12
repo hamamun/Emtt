@@ -1046,13 +1046,15 @@ class PanelTests(unittest.TestCase):
         self.assertEqual(block["protect"],
                          "Protect: Original | Age: 00:05 / ~45-90m")
 
-    def test_a_pending_order_alone_opens_no_block(self):
+    def test_pending_followup_exposes_protection_without_floating_profit(self):
         position = p8.LivePosition(ticket=1, side=p8.BUY, volume=0.10,
                                    entry=ENTRY, current=ENTRY,
                                    floating_money=0.0)
-        self.assertIsNone(p8.live_block(position, point=POINT,
-                                        digits=DIGITS, volume_digits=2,
-                                        pending=True))
+        block = p8.live_block(position, point=POINT, digits=DIGITS,
+                              volume_digits=2, pending=True)
+        self.assertTrue(block["header"].endswith("PENDING"))
+        self.assertEqual(block["floating"], "Floating P/L: -- (pending order)")
+        self.assertIn("Pending validity: recovering", block["protect"])
         self.assertIsNone(p8.live_block(None, point=POINT, digits=DIGITS,
                                         volume_digits=2))
 

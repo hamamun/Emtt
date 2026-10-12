@@ -19,6 +19,7 @@
 #include "Emtt_Dashboard.mqh"
 #include "Emtt_TickDivergence.mqh"
 #include "Emtt_Trade.mqh"
+#include "Emtt_Pending.mqh"
 #include "Emtt_LearnFile.mqh"
 #include "Emtt_Learning.mqh"
 
@@ -31,6 +32,11 @@ struct SEmttTradeRuntime
    long            magic;
    bool            autoTrading;
    int             autoTradeAbove;   // Phase 11: clamped 35..100
+   int             pendingValidityBars;
+   bool            analysisReady;
+   bool            connected;
+   bool            quoteFresh;
+   bool            marketKnown;
    int             lotMode;
    bool            marginCheck;
    bool            placeStopLoss;
@@ -65,6 +71,12 @@ struct SEmttTradeState
    datetime        planStartBarTime;
    datetime        filledAt;
    datetime        closedAt;
+   datetime        pendingDeadline;
+   datetime        pendingUnavailableSince;
+   datetime        pendingCancelAttempt;
+   int             pendingCancelCode;
+   bool            pendingMetadataReady;
+   double          pendingBlockFarEdge;
    datetime        lastAttemptBarTime;
    datetime        lastManagedBarTime;
    datetime        freshStatusBarTime;
@@ -145,6 +157,12 @@ void EmttTradeManagerReset(SEmttTradeState &state)
    state.planStartBarTime=0;
    state.filledAt=0;
    state.closedAt=0;
+   state.pendingDeadline=0;
+   state.pendingUnavailableSince=0;
+   state.pendingCancelAttempt=0;
+   state.pendingCancelCode=0;
+   state.pendingMetadataReady=false;
+   state.pendingBlockFarEdge=0.0;
    state.lastAttemptBarTime=0;
    state.lastManagedBarTime=0;
    state.freshStatusBarTime=0;
@@ -249,6 +267,66 @@ string EmttTradeManagerMoney(const double amount)
    const string currency=AccountInfoString(ACCOUNT_CURRENCY);
    return (amount>=0.0 ? "+" : "-")+currency+" "+
           DoubleToString(MathAbs(amount),2);
+  }
+
+// Display estimates in account currency using the broker's contract model.
+// Entry money is the absolute price-gap value, not margin or floating P/L.
+string EmttTradeManagerEstimate(const string symbol,const int side,
+                                 const double volume,const double entry,
+                                 const double exitPrice,const bool absoluteValue=false)
+  {
+   double amount=0.0;
+   if((side!=1 && side!=-1) || volume<=0.0 || entry<=0.0 || exitPrice<=0.0 ||
+      !OrderCalcProfit((side>0 ? ORDER_TYPE_BUY : ORDER_TYPE_SELL),
+                       symbol,volume,entry,exitPrice,amount) ||
+      !MathIsValidNumber(amount))
+      return "--";
+   if(absoluteValue) amount=MathAbs(amount);
+   return "est. "+EmttTradeManagerMoney(amount);
+  }
+
+void EmttTradeManagerPlanMoney(SEmttPanelData &data,const string symbol,
+                               const int side,const double volume,
+                               const double entry,const double stop,
+                               const double target,const double dealing,
+                               const double point,const int digits)
+  {
+   const int gap=(point>0.0 ? (int)MathRound(MathAbs(dealing-entry)/point) : 0);
+   const int risk=(point>0.0 ? (int)MathRound(MathAbs(entry-stop)/point) : 0);
+   const int reward=(point>0.0 ? (int)MathRound(MathAbs(target-entry)/point) : 0);
+   data.entry="Entry: "+DoubleToString(entry,digits)+" / gap "+
+      EmttTradeManagerEstimate(symbol,side,volume,entry,dealing,true)+
+      " ("+IntegerToString(gap)+" pts away)";
+   data.stopLoss="Stop Loss: "+DoubleToString(stop,digits)+" / "+
+      EmttTradeManagerEstimate(symbol,side,volume,entry,stop)+
+      " ("+IntegerToString(risk)+" pts)";
+   data.takeProfit="Take Profit: "+DoubleToString(target,digits)+" / "+
+      EmttTradeManagerEstimate(symbol,side,volume,entry,target)+
+      " ("+IntegerToString(reward)+" pts)";
+  }
+
+// Revalidate fixed plan levels at the executable price, not an old bar close.
+string EmttTradeManagerExecutionReason(const SEmttTradeOrderPlan &order,
+                                       const SEmttTradeRuntime &runtime,
+                                       const SEmttTradePlan &plan)
+  {
+   if(!EmttTradeValidPositive(runtime.atr))
+      return "ATR unavailable for execution check";
+   const double dealing=(plan.side>0 ? runtime.ask : runtime.bid);
+   if(order.pending && MathAbs(dealing-order.price)>
+      EMTT_PLAN_ENTRY_REACH_ATR*runtime.atr)
+      return "pending entry farther than 2.0 ATR from live price";
+   const double risk=plan.side*(order.price-plan.stop);
+   const double reward=plan.side*(plan.target-order.price);
+   if(risk<=0.0 || reward<=0.0)
+      return "stop or target on wrong side of execution price";
+   if(risk>EMTT_PLAN_STOP_MAX_ATR*runtime.atr)
+      return "execution stop farther than 3.0 ATR";
+   if(risk<EMTT_PLAN_STOP_MIN_ATR*runtime.atr)
+      return "execution stop closer than 1.0 ATR";
+   if(reward/risk<EmttPlanMinRiskReward(runtime.mood))
+      return "execution reward/risk below regime minimum";
+   return "";
   }
 
 string EmttTradeManagerRetcodeText(const uint code)
@@ -368,8 +446,8 @@ void EmttTradeManagerAdoptPosition(SEmttTradeState &state,
                      EmttTradeManagerTimeText(barTime));
      }
    state.positionOpen=true;
-   state.pendingOrder=false;
-   state.pendingTicket=0;
+   // Observe scans orders after positions: a partial fill can leave both.
+
    state.liveStatus="Signal active "+EmttTradeDash()+
                     " position open, managing.";
   }
@@ -414,9 +492,126 @@ bool EmttTradeManagerHistoryNet(const SEmttTradeState &state,
    return true;
   }
 
+// A single live lease per account/server/symbol/magic, matching the existing
+// one-owned-trade rule. Terminal globals survive EA/timeframe/terminal restart.
+// They do not transfer to another terminal/VPS; missing metadata fails closed.
+string EmttPendingKey(const SEmttTradeState &state)
+  {
+   const string identity=AccountInfoString(ACCOUNT_SERVER)+"|"+state.symbol+"|"+
+      StringFormat("%I64d|%I64d",AccountInfoInteger(ACCOUNT_LOGIN),state.magic);
+   long hash=0;
+   long second=0;
+   for(int i=0;i<StringLen(identity);i++)
+     {
+      hash=(hash*131+(long)StringGetCharacter(identity,i))%2147483647;
+      second=(second*137+(long)StringGetCharacter(identity,i))%2147483629;
+     }
+   return StringFormat("Emtt_P_%I64d_%I64d",hash,second);
+  }
+
+string EmttPendingBlockKey(const SEmttTradeState &state,const ENUM_TIMEFRAMES tf,
+                           const int side)
+  {
+   return EmttPendingKey(state)+StringFormat(".b%d_%d",(int)tf,side);
+  }
+
+bool EmttPendingRetired(const SEmttTradeState &state,const ENUM_TIMEFRAMES tf,
+                        const int side,const double entry,const double point)
+  {
+   const string key=EmttPendingBlockKey(state,tf,side);
+   return GlobalVariableCheck(key) &&
+      MathAbs(GlobalVariableGet(key)-entry)<=MathMax(point*0.5,0.00000001);
+  }
+
+// One submission per order-block edge and side. A different block edge is a
+// fresh setup. Restart/replay of the same cancelled/expired setup is not.
+bool EmttPendingRetire(const SEmttTradeState &state,const ENUM_TIMEFRAMES tf,
+                       const int side,const double entry)
+  {
+   const bool saved=(GlobalVariableSet(EmttPendingBlockKey(state,tf,side),entry)>0);
+   GlobalVariablesFlush();
+   return saved;
+  }
+
+bool EmttPendingSaveLease(SEmttTradeState &state,const SEmttTradeRuntime &runtime,
+                          const SEmttTradePlan &plan,const SEmttSmcState &smc,
+                          const datetime deadline,const datetime now)
+  {
+   const string key=EmttPendingKey(state);
+   if(GlobalVariableSet(key+".valid",0.0)==0) return false;
+   const double edge=state.pendingBlockFarEdge;
+   bool ok=true;
+   ok=(GlobalVariableSet(key+".born",(double)now)>0) && ok;
+   ok=(GlobalVariableSet(key+".due",(double)deadline)>0) && ok;
+   ok=(GlobalVariableSet(key+".tf",(double)runtime.timeframe)>0) && ok;
+   ok=(GlobalVariableSet(key+".plan",(double)plan.startBarTime)>0) && ok;
+   ok=(GlobalVariableSet(key+".side",(double)plan.side)>0) && ok;
+   ok=(GlobalVariableSet(key+".entry",plan.entry)>0) && ok;
+   ok=(GlobalVariableSet(key+".stop",plan.stop)>0) && ok;
+   ok=(GlobalVariableSet(key+".target",plan.target)>0) && ok;
+   ok=(GlobalVariableSet(key+".edge",edge)>0) && ok;
+   ok=(GlobalVariableSet(key+".atr",runtime.atr)>0) && ok;
+   ok=(GlobalVariableSet(key+".cancel",0.0)>0) && ok;
+   ok=(GlobalVariableSet(key+".unavailable",0.0)>0) && ok;
+   if(ok) ok=(GlobalVariableSet(key+".valid",1.0)>0);
+   GlobalVariablesFlush();
+   if(!ok) return false;
+   state.pendingDeadline=deadline;
+   state.pendingBlockFarEdge=edge;
+   state.pendingCancelCode=0;
+   state.pendingCancelAttempt=0;
+   state.pendingUnavailableSince=0;
+   state.pendingMetadataReady=true;
+   return true;
+  }
+
+void EmttPendingRecover(SEmttTradeState &state)
+  {
+   state.pendingMetadataReady=false;
+   if(!state.pendingOrder || !OrderSelect(state.pendingTicket)) return;
+   const string key=EmttPendingKey(state);
+   if(!GlobalVariableCheck(key+".valid") || GlobalVariableGet(key+".valid")!=1.0)
+      return;
+   const datetime born=(datetime)GlobalVariableGet(key+".born");
+   const datetime setup=(datetime)OrderGetInteger(ORDER_TIME_SETUP);
+   const double entry=OrderGetDouble(ORDER_PRICE_OPEN);
+   const int side=(OrderGetInteger(ORDER_TYPE)==ORDER_TYPE_BUY_LIMIT ? 1 : -1);
+   const double point=SymbolInfoDouble(state.symbol,SYMBOL_POINT);
+   const ENUM_TIMEFRAMES tf=(ENUM_TIMEFRAMES)(int)GlobalVariableGet(key+".tf");
+   // Bind to the broker receipt when available. The bounded setup-time match
+   // also covers a crash after server acceptance but before receipt storage.
+   const string receipt=key+StringFormat(".o%I64u",state.pendingTicket);
+   if((!GlobalVariableCheck(receipt) && (setup<born || setup>born+120)) ||
+      setup<born ||
+      side!=(int)GlobalVariableGet(key+".side") ||
+      MathAbs(entry-GlobalVariableGet(key+".entry"))>point*0.5+0.00000001 ||
+      (tf!=PERIOD_M5 && tf!=PERIOD_M15 && tf!=PERIOD_M30))
+      return;
+   const datetime due=(datetime)GlobalVariableGet(key+".due");
+   const datetime plan=(datetime)GlobalVariableGet(key+".plan");
+   if(due<=0 || plan<=0 || born<=0) return;
+   state.pendingDeadline=due;
+   state.pendingBlockFarEdge=GlobalVariableGet(key+".edge");
+   state.pendingCancelCode=(int)GlobalVariableGet(key+".cancel");
+   state.pendingUnavailableSince=(datetime)GlobalVariableGet(key+".unavailable");
+   state.tradeTimeframe=tf;
+   state.planStartBarTime=plan;
+   state.recordTfName=EmttTradeManagerTfName(tf);
+   state.side=side;
+   state.plannedEntry=entry;
+   state.plannedStop=GlobalVariableGet(key+".stop");
+   state.plannedTarget=GlobalVariableGet(key+".target");
+   state.entryAtr=GlobalVariableGet(key+".atr");
+   state.entryKind=EMTT_PLAN_ENTRY_BLOCK;
+   state.hasPlanContext=true;
+   state.pendingMetadataReady=true;
+  }
+
 void EmttTradeManagerObserve(SEmttTradeState &state,
                              const datetime barTime)
   {
+   // A disconnected/stale terminal snapshot is not a broker lifecycle event.
+   if(!TerminalInfoInteger(TERMINAL_CONNECTED)) return;
    ulong position=0;
    if(EmttTradeManagerFindPosition(state.symbol,state.magic,position))
       EmttTradeManagerAdoptPosition(state,position,
@@ -467,6 +662,16 @@ void EmttTradeManagerObserve(SEmttTradeState &state,
       state.pendingTicket=pending;
       state.pendingOrder=true;
       state.side=pendingSide;
+      if(firstPending)
+        {
+         state.pendingDeadline=0;
+         state.pendingUnavailableSince=0;
+         state.pendingCancelAttempt=0;
+         state.pendingCancelCode=0;
+        }
+      EmttPendingRecover(state);
+      if(state.positionOpen && state.positionVolume>state.initialVolume)
+         state.initialVolume=state.positionVolume;
       state.liveStatus="Signal active "+EmttTradeDash()+
          " pending order at "+DoubleToString(pendingPrice,
            (int)SymbolInfoInteger(state.symbol,SYMBOL_DIGITS))+", waiting.";
@@ -479,6 +684,14 @@ void EmttTradeManagerObserve(SEmttTradeState &state,
      }
    else if(state.pendingOrder)
      {
+      // Order list disappearance alone is not an acknowledged cancellation.
+      if(!TerminalInfoInteger(TERMINAL_CONNECTED) ||
+         !HistoryOrderSelect(state.pendingTicket)) return;
+      const ENUM_ORDER_STATE outcome=(ENUM_ORDER_STATE)HistoryOrderGetInteger(state.pendingTicket,ORDER_STATE);
+      if(outcome!=ORDER_STATE_CANCELED && outcome!=ORDER_STATE_EXPIRED &&
+         outcome!=ORDER_STATE_FILLED && outcome!=ORDER_STATE_REJECTED) return;
+      PrintFormat("Emtt | Pending reconciled | ticket %I64u | broker state %d | filled position %s",
+                  state.pendingTicket,(int)outcome,(state.positionOpen ? "yes" : "no"));
       state.pendingOrder=false;
       state.pendingTicket=0;
       if(state.positionOpen)
@@ -512,6 +725,7 @@ void EmttTradeManagerBindTicket(SEmttTradeState &state,
         }
       return;
      }
+   state.pendingBlockFarEdge=0.0;
    state.planStartBarTime=ticket.startBarTime;
    state.tradeTimeframe=timeframe;
    state.recordTfName=EmttTradeManagerTfName(timeframe);
@@ -748,24 +962,64 @@ void EmttTradeManagerCancelPending(SEmttTradeState &state,
                                    const string reason,
                                    const datetime barTime)
   {
-   if(!state.pendingOrder || state.pendingTicket==0)
+   if(!state.pendingOrder || state.pendingTicket==0) return;
+   const datetime now=(TimeTradeServer()>0 ? TimeTradeServer() : TimeCurrent());
+   if(state.pendingCancelAttempt>0 && now-state.pendingCancelAttempt<EMTT_PENDING_RETRY_SECONDS)
       return;
+   state.pendingCancelAttempt=now;
+   const ulong requested=state.pendingTicket;
+   // Persist cancellation intent before contacting the broker. A rebound or
+   // restart must not revive this execution attempt.
+   if(state.pendingCancelCode==0) state.pendingCancelCode=EMTT_PENDING_SIGNAL;
+   if(state.pendingMetadataReady)
+     {
+      GlobalVariableSet(EmttPendingKey(state)+".cancel",(double)state.pendingCancelCode);
+      GlobalVariablesFlush();
+     }
+   if(state.hasPlanContext && state.plannedEntry>0.0)
+      EmttPendingRetire(state,state.tradeTimeframe,state.side,state.plannedEntry);
+   if(!TerminalInfoInteger(TERMINAL_CONNECTED) ||
+      !TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) ||
+      !MQLInfoInteger(MQL_TRADE_ALLOWED) || !AccountInfoInteger(ACCOUNT_TRADE_ALLOWED))
+     {
+      state.gateStatus="Pending cancellation waiting for connection/trading permission";
+      return;
+     }
    g_emttTradeExecutor.SetExpertMagicNumber((ulong)state.magic);
-   if(g_emttTradeExecutor.OrderDelete(state.pendingTicket))
+   g_emttTradeExecutor.SetAsyncMode(false);
+   const bool requestedOK=g_emttTradeExecutor.OrderDelete(requested);
+   const uint code=g_emttTradeExecutor.ResultRetcode();
+   const bool stillPending=OrderSelect(requested);
+   if(stillPending)
      {
-      PrintFormat("Emtt | Pending cancelled | %s | bar %s",reason,
-                  EmttTradeManagerTimeText(barTime));
-      state.pendingOrder=false;
-      state.pendingTicket=0;
-      state.liveStatus="";
-      state.hasPlanContext=false;
+      state.gateStatus="Pending cancellation unconfirmed: broker "+IntegerToString((int)code);
+      PrintFormat("Emtt | Pending cancel retry | ticket %I64u | %s | broker %u",
+                  requested,reason,code);
+      return;
      }
+   // An absent order may have filled, expired, or been manually cancelled.
+   // Do not label it cancelled from the CTrade boolean alone.
+   if(!HistoryOrderSelect(requested))
+     {
+      state.gateStatus="Pending cancellation awaiting broker history";
+      return;
+     }
+   const ENUM_ORDER_STATE outcome=(ENUM_ORDER_STATE)HistoryOrderGetInteger(requested,ORDER_STATE);
+   const bool removed=(outcome==ORDER_STATE_CANCELED || outcome==ORDER_STATE_EXPIRED ||
+                        outcome==ORDER_STATE_FILLED || outcome==ORDER_STATE_REJECTED);
+   if(!removed) return;
+   state.pendingOrder=false;
+   state.pendingTicket=0;
+   state.liveStatus="";
+   if(requestedOK && code==TRADE_RETCODE_DONE && outcome==ORDER_STATE_CANCELED)
+      PrintFormat("Emtt | Pending cancelled | %s | ticket %I64u | bar %s",
+                  reason,requested,EmttTradeManagerTimeText(barTime));
    else
-     {
-      const uint code=g_emttTradeExecutor.ResultRetcode();
-      state.gateStatus="Order rejected "+EmttTradeDash()+
-                       " broker error "+EmttTradeManagerRetcodeText(code);
-     }
+      PrintFormat("Emtt | Pending reconciled | ticket %I64u | broker state %d | reason %s",
+                  requested,(int)outcome,reason);
+   EmttTradeManagerObserve(state,barTime);
+   // Never reset position context during a cancel/fill race or partial fill.
+   if(!state.positionOpen && !state.pendingOrder) state.hasPlanContext=false;
   }
 
 void EmttTradeManagerUpdateExtremes(SEmttTradeState &state,
@@ -825,14 +1079,54 @@ bool EmttTradeManagerSendOrder(SEmttTradeState &state,
    g_emttTradeExecutor.SetAsyncMode(false);
    g_emttTradeExecutor.SetTypeFillingBySymbol(runtime.symbol);
    bool sent=false;
+   ENUM_ORDER_TYPE_TIME pendingTime=ORDER_TIME_GTC;
+   datetime expiry=0;
+   if(order.pending)
+     {
+      const datetime now=(TimeTradeServer()>0 ? TimeTradeServer() : TimeCurrent());
+      const double closed=iClose(runtime.symbol,runtime.timeframe,1);
+      if(state.pendingBlockFarEdge<=0.0 || closed<=0.0 ||
+         plan.side*(closed-state.pendingBlockFarEdge)<0.0)
+        {
+         state.gateStatus="No trade - originating order block unavailable or invalidated";
+         return false;
+        }
+      const datetime eligible=plan.startBarTime+PeriodSeconds(runtime.timeframe);
+      expiry=EmttPendingDeadline(eligible,PeriodSeconds(runtime.timeframe),
+                                  runtime.pendingValidityBars,state.expectedUpperMinutes);
+      if(expiry<=now)
+        {
+         EmttPendingRetire(state,runtime.timeframe,plan.side,plan.entry);
+         state.gateStatus="No trade - entry validity already expired";
+         return false;
+        }
+      const long modes=SymbolInfoInteger(runtime.symbol,SYMBOL_EXPIRATION_MODE);
+      if((modes & SYMBOL_EXPIRATION_SPECIFIED)!=0)
+         pendingTime=ORDER_TIME_SPECIFIED;
+      else if((modes & SYMBOL_EXPIRATION_GTC)==0)
+        {
+         state.gateStatus="No trade - broker cannot support requested pending lifetime";
+         return false;
+        }
+      if(!EmttPendingSaveLease(state,runtime,plan,smc,expiry,now) ||
+         !EmttPendingRetire(state,runtime.timeframe,plan.side,plan.entry))
+        {
+         state.gateStatus="No trade - cannot persist pending execution lease";
+         return false;
+        }
+      // Retired before sending: ambiguous submission failures must never
+      // cause a duplicate after restart. A new block edge is required.
+     }
    if(order.pending)
      {
       if(order.side>0)
          sent=g_emttTradeExecutor.BuyLimit(lots,order.price,runtime.symbol,
-                    order.stopLoss,order.takeProfit,ORDER_TIME_GTC,0,comment);
+                    order.stopLoss,order.takeProfit,pendingTime,
+                    (pendingTime==ORDER_TIME_SPECIFIED ? expiry : 0),comment);
       else
          sent=g_emttTradeExecutor.SellLimit(lots,order.price,runtime.symbol,
-                    order.stopLoss,order.takeProfit,ORDER_TIME_GTC,0,comment);
+                    order.stopLoss,order.takeProfit,pendingTime,
+                    (pendingTime==ORDER_TIME_SPECIFIED ? expiry : 0),comment);
      }
    else
      {
@@ -902,12 +1196,25 @@ bool EmttTradeManagerSendOrder(SEmttTradeState &state,
      {
       state.pendingTicket=g_emttTradeExecutor.ResultOrder();
       state.pendingOrder=true;
+      GlobalVariableSet(EmttPendingKey(state)+StringFormat(".o%I64u",state.pendingTicket),1.0);
+      GlobalVariablesFlush();
+      PrintFormat("Emtt | Pending validity | ticket %I64u | origin %s | expires %s | %s",
+                  state.pendingTicket,EmttTradeManagerTfName(runtime.timeframe),
+                  EmttTradeManagerTimeText(expiry),
+                  (pendingTime==ORDER_TIME_SPECIFIED ? "broker expiry + EA" :
+                   "WARNING: EA-only expiry; offline order can remain active"));
       state.liveStatus="Signal active "+EmttTradeDash()+" pending order at "+
          DoubleToString(order.price,runtime.digits)+", waiting.";
-      PrintFormat("Emtt | Order %s | pending limit %s | lots %s | GTC | bar %s",
+      PrintFormat("Emtt | Order %s | pending limit %s | lots %s | bar %s",
                   EmttPlanSideName(order.side),
                   DoubleToString(order.price,runtime.digits),
                   DoubleToString(lots,2),EmttTradeManagerTimeText(barTime));
+      PrintFormat("Emtt | Pending details | source %s | quote %s | distance %.2f ATR | SL %s | TP %s | validity logged separately",
+                  plan.entrySource,
+                  DoubleToString((order.side>0 ? runtime.ask : runtime.bid),runtime.digits),
+                  (runtime.atr>0.0 ? MathAbs((order.side>0 ? runtime.ask : runtime.bid)-order.price)/runtime.atr : 0.0),
+                  (order.stopLossSent ? DoubleToString(order.stopLoss,runtime.digits) : "not sent"),
+                  DoubleToString(order.takeProfit,runtime.digits));
      }
    else
      {
@@ -1287,6 +1594,7 @@ void EmttTradeManagerSetSignalPlan(SEmttTradeState &state,
      {
       if(newContext)
         {
+         state.pendingBlockFarEdge=0.0;
          state.planStartBarTime=plan.startBarTime;
          state.tradeTimeframe=runtime.timeframe;
          state.recordTfName=EmttTradeManagerTfName(runtime.timeframe);
@@ -1308,6 +1616,12 @@ void EmttTradeManagerSetSignalPlan(SEmttTradeState &state,
          state.entrySource=plan.entrySource;
          state.hasPlanContext=true;
         }
+      // Capture the originating block once, not whichever block is nearest
+      // when confidence later crosses the execution threshold.
+      if(state.pendingBlockFarEdge<=0.0 && smc.hasOrderBlock &&
+         smc.orderBlockBullish==(plan.side>0) &&
+         MathAbs(smc.orderBlockNearEdge-plan.entry)<=runtime.point*0.5)
+         state.pendingBlockFarEdge=(plan.side>0 ? smc.orderBlockLow : smc.orderBlockHigh);
       state.currentConfidence=runtime.confidence;
       if(newContext || state.tp2<=0.0)
         {
@@ -1334,6 +1648,7 @@ void EmttTradeManagerTryOrder(SEmttTradeState &state,
                               const SEmttVolumeFlowState &vf)
   {
    if(!runtime.chartCompatible || !runtime.learningLoaded ||
+      !runtime.analysisReady || !runtime.connected || !runtime.quoteFresh ||
       !plan.active || runtime.confidence<0 || runtime.barTime<=0)
      {
       if(!plan.active)
@@ -1342,6 +1657,12 @@ void EmttTradeManagerTryOrder(SEmttTradeState &state,
      }
    if(plan.side!=1 && plan.side!=-1)
       return;
+   if(plan.entryKind==EMTT_PLAN_ENTRY_BLOCK &&
+      EmttPendingRetired(state,runtime.timeframe,plan.side,plan.entry,runtime.point))
+     {
+      state.gateStatus="No trade - this order-block execution attempt is retired";
+      return;
+     }
    if(state.lastAttemptBarTime==runtime.barTime)
       return;
    if(state.positionOpen || state.pendingOrder)
@@ -1385,7 +1706,7 @@ void EmttTradeManagerTryOrder(SEmttTradeState &state,
    const double minimum=SymbolInfoDouble(runtime.symbol,SYMBOL_VOLUME_MIN);
    const double maximum=SymbolInfoDouble(runtime.symbol,SYMBOL_VOLUME_MAX);
    const double step=SymbolInfoDouble(runtime.symbol,SYMBOL_VOLUME_STEP);
-   const double lots=EmttTradeResolveLots(runtime.lotMode,balance,plan.entry,
+   const double lots=EmttTradeResolveLots(runtime.lotMode,balance,order.price,
       plan.stop,tickSize,tickValue,runtime.confidence,
       state.newsSizeMultiplier,minimum,maximum,step);
    if(lots<=0.0)
@@ -1429,6 +1750,17 @@ void EmttTradeManagerTryOrder(SEmttTradeState &state,
       state.gateStatus=reason;
       return;
      }
+   const string executionReason=EmttTradeManagerExecutionReason(order,runtime,plan);
+   if(executionReason!="")
+     {
+      state.gateStatus="No trade "+EmttTradeDash()+executionReason;
+      PrintFormat("Emtt | Trade gate | %s | quote %s | entry %s | ATR %s | bar %s",
+                  state.gateStatus,
+                  DoubleToString((plan.side>0 ? runtime.ask : runtime.bid),digits),
+                  DoubleToString(order.price,digits),DoubleToString(runtime.atr,digits),
+                  EmttTradeManagerTimeText(runtime.barTime));
+      return;
+     }
    if(state.gateStatus!="")
       state.gateStatus="";
    EmttTradeManagerSendOrder(state,runtime,plan,smc,vf,currentSpread,lots,
@@ -1440,6 +1772,9 @@ void EmttTradeManagerBindCurrentOpenTicket(
    const SEmttTradePlan &plan,const SEmttLearnFileState &file)
   {
    if(state.positionOpen && state.hasPlanContext)
+      return;
+   if(state.pendingOrder && state.pendingMetadataReady &&
+      (file.tfName!=EmttTradeManagerTfName(state.tradeTimeframe)))
       return;
    int slot=-1;
    if(state.positionOpen)
@@ -1477,7 +1812,8 @@ void EmttTradeManagerBindCurrentOpenTicket(
       const int orderSide=(kind==ORDER_TYPE_BUY_LIMIT ? 1 : -1);
       const double orderPrice=OrderGetDouble(ORDER_PRICE_OPEN);
       const double tolerance=SymbolInfoDouble(state.symbol,SYMBOL_POINT)*0.5;
-      if(ticket.side!=orderSide ||
+      if((state.pendingMetadataReady && ticket.startBarTime!=state.planStartBarTime) ||
+         ticket.side!=orderSide ||
          MathAbs(ticket.entry-orderPrice)>tolerance ||
          ticket.startBarTime<=0)
          return;
@@ -1512,25 +1848,60 @@ void EmttTradeManagerStep(SEmttTradeState &state,
 
    if(state.pendingOrder)
      {
-      const bool matched=(runtime.learningLoaded && state.hasPlanContext &&
-         learningFile.openTicket>=0 &&
-         learningFile.openTicket<learningFile.ticketCount &&
-         learningFile.tickets[learningFile.openTicket].startBarTime==
-            state.planStartBarTime);
-      if(!runtime.chartCompatible)
-         EmttTradeManagerCancelPending(state,
-            "no matching open plan in learning file",runtime.barTime);
-      else if(runtime.learningLoaded && state.adopted && !matched)
-         EmttTradeManagerCancelPending(state,
-            "no matching open plan in learning file",runtime.barTime);
-      else if(!runtime.marketOpen)
-         EmttTradeManagerCancelPending(state,"market closed",runtime.barTime);
-      else if(!plan.active || runtime.confidence<0)
-         EmttTradeManagerCancelPending(state,"signal changed",runtime.barTime);
-      else if(state.hasPlanContext &&
-              (plan.side!=state.side ||
-               plan.startBarTime!=state.planStartBarTime))
-         EmttTradeManagerCancelPending(state,"signal changed",runtime.barTime);
+      const datetime now=(TimeTradeServer()>0 ? TimeTradeServer() : TimeCurrent());
+      const bool sourceReady=(runtime.connected && runtime.analysisReady &&
+         runtime.timeframe==state.tradeTimeframe && runtime.learningLoaded);
+      if(!sourceReady || !state.pendingMetadataReady)
+        {
+         if(state.pendingUnavailableSince==0)
+           {
+            const string recoveryKey=EmttPendingKey(state)+StringFormat(".u%I64u",state.pendingTicket);
+            if(GlobalVariableCheck(recoveryKey))
+               state.pendingUnavailableSince=(datetime)GlobalVariableGet(recoveryKey);
+            if(state.pendingUnavailableSince<=0) state.pendingUnavailableSince=now;
+           }
+        }
+      else state.pendingUnavailableSince=0;
+      const string recoveryKey=EmttPendingKey(state)+StringFormat(".u%I64u",state.pendingTicket);
+      if(!GlobalVariableCheck(recoveryKey) ||
+         GlobalVariableGet(recoveryKey)!=(double)state.pendingUnavailableSince)
+        {
+         GlobalVariableSet(recoveryKey,(double)state.pendingUnavailableSince);
+         if(state.pendingMetadataReady)
+            GlobalVariableSet(EmttPendingKey(state)+".unavailable",(double)state.pendingUnavailableSince);
+         GlobalVariablesFlush();
+        }
+      SEmttPendingCheck check;
+      check.now=now;
+      check.deadline=state.pendingDeadline;
+      check.unavailableSince=state.pendingUnavailableSince;
+      check.autoTrading=runtime.autoTrading;
+      check.partialFill=state.positionOpen;
+      check.metadataReady=state.pendingMetadataReady;
+      check.analysisReady=sourceReady;
+      check.marketKnown=runtime.marketKnown;
+      check.marketOpen=runtime.marketOpen;
+      check.quoteReady=runtime.quoteFresh;
+      check.planMatches=(plan.active && plan.side==state.side &&
+                         plan.startBarTime==state.planStartBarTime);
+      check.confidence=runtime.confidence;
+      check.threshold=runtime.autoTradeAbove;
+      check.side=state.side;
+      check.entry=state.plannedEntry;
+      check.stop=state.plannedStop;
+      check.target=state.plannedTarget;
+      check.blockFarEdge=state.pendingBlockFarEdge;
+      check.bid=runtime.bid;
+      check.ask=runtime.ask;
+      check.closedPrice=(sourceReady ? iClose(runtime.symbol,state.tradeTimeframe,1) : 0.0);
+      check.atr=(sourceReady ? runtime.atr : 0.0);
+      EEmttPendingReason reason=(EEmttPendingReason)state.pendingCancelCode;
+      if(reason==EMTT_PENDING_KEEP) reason=EmttPendingDecision(check);
+      if(reason!=EMTT_PENDING_KEEP)
+        {
+         state.pendingCancelCode=(int)reason;
+         EmttTradeManagerCancelPending(state,EmttPendingReasonText(reason),runtime.barTime);
+        }
      }
    else if(!state.positionOpen)
      {
@@ -1599,6 +1970,8 @@ void EmttTradeManagerFillPanel(SEmttPanelData &data,
      {
       if(state.pendingOrder)
         {
+         // Pending lifecycle follow-up: expose expiry and broker protection.
+         data.showLive=true;
          state.liveStatus="Signal active "+EmttTradeDash()+
             " pending order at "+DoubleToString(state.plannedEntry,digits)+
             ", waiting.";
@@ -1618,8 +1991,14 @@ void EmttTradeManagerFillPanel(SEmttPanelData &data,
             DoubleToString(pendingVolume,volumeDigits)+" lots @ "+
             DoubleToString(pendingPrice,digits);
          data.floatingPL="Floating P/L: -- (pending order)";
-         data.liveSL="Live SL: "+(state.plannedStop>0.0 ?
-            DoubleToString(state.plannedStop,digits) : "--")+
+         if(compatible && state.hasPlanContext)
+            EmttTradeManagerPlanMoney(data,symbol,state.side,pendingVolume,
+               pendingPrice,state.plannedStop,state.plannedTarget,
+               (state.side>0 ? ask : bid),point,digits);
+         const double brokerStop=(state.pendingTicket>0 && OrderSelect(state.pendingTicket) ?
+                                  OrderGetDouble(ORDER_SL) : 0.0);
+         data.liveSL="Broker SL: "+(brokerStop>0.0 ?
+            DoubleToString(brokerStop,digits) : "not set")+
             " | TP1: "+(state.plannedTarget>0.0 ?
             DoubleToString(state.plannedTarget,digits) : "--")+
             " TP2: --";
@@ -1627,7 +2006,19 @@ void EmttTradeManagerFillPanel(SEmttPanelData &data,
             EmttLearnDurationFromEstimate(state.expectedMinutes,
                (state.tradeTimeframe!=PERIOD_CURRENT ? state.tradeTimeframe :
                                                       chartTimeframe)) : "--");
-         data.protect="Protect: Pending | Age: -- / "+duration;
+         const datetime now=(TimeTradeServer()>0 ? TimeTradeServer() : TimeCurrent());
+         const int remaining=(state.pendingDeadline>now ? (int)((state.pendingDeadline-now+59)/60) : 0);
+         const bool brokerExpiry=(state.pendingTicket>0 && OrderSelect(state.pendingTicket) &&
+                                   OrderGetInteger(ORDER_TIME_EXPIRATION)>0);
+         data.protect="Pending validity: "+(state.pendingDeadline>0 ?
+            IntegerToString(remaining)+"m remaining" : "recovering")+
+            (brokerExpiry ? " (broker + EA)" : " (EA-only; keep MT5 online)")+
+            " | Expected trade duration: "+duration;
+         if(state.pendingCancelCode!=0)
+            state.liveStatus="Pending cancellation: "+EmttPendingReasonText((EEmttPendingReason)state.pendingCancelCode);
+         else if(state.pendingUnavailableSince>0)
+            state.liveStatus="Pending recovery: return to "+EmttTradeManagerTfName(state.tradeTimeframe)+
+               " for setup validation (60s grace)";
          data.status=state.liveStatus;
         }
       return;
@@ -1692,36 +2083,12 @@ void EmttTradeManagerFillPanel(SEmttPanelData &data,
    state.liveStatus="Signal active "+EmttTradeDash()+
                     " position open, managing.";
 
-   // The approved panel rows show dollar amounts only for Emtt's own
-   // position. Incompatible charts keep their required blank data fields.
+   // Use actual fill and remaining volume; these are planned-level estimates,
+   // not a claim that the planned stop is installed at the broker.
    if(compatible && state.hasPlanContext)
-     {
-      const double tickSize=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_SIZE);
-      double tickValue=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_VALUE);
-      if(tickValue<=0.0)
-         tickValue=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_VALUE_PROFIT);
-      double entryMoney=0.0,stopMoney=0.0,targetMoney=0.0;
-      EmttTradeMoneyRows(state.plannedEntry,state.plannedStop,
-         state.plannedTarget,(state.side>0 ? ask : bid),
-         state.positionVolume,tickSize,tickValue,
-         entryMoney,stopMoney,targetMoney);
-      const int entryPts=(point>0.0 ? (int)MathRound(MathAbs(
-         (state.side>0 ? ask : bid)-state.plannedEntry)/point) : 0);
-      const int stopDistance=(point>0.0 ? (int)MathRound(MathAbs(
-         state.plannedEntry-state.plannedStop)/point) : 0);
-      const int targetDistance=(point>0.0 ? (int)MathRound(MathAbs(
-         state.plannedTarget-state.plannedEntry)/point) : 0);
-      data.entry="Entry: "+DoubleToString(state.plannedEntry,digits)+" / "+
-         EmttTradeManagerMoney(entryMoney)+" ("+IntegerToString(entryPts)+
-         " pts away)";
-      data.stopLoss="Stop Loss: "+DoubleToString(state.plannedStop,digits)+
-         " / "+EmttTradeManagerMoney(stopMoney)+" ("+
-         IntegerToString(stopDistance)+" pts)";
-      data.takeProfit="Take Profit: "+
-         DoubleToString(state.plannedTarget,digits)+" / "+
-         EmttTradeManagerMoney(targetMoney)+" ("+
-         IntegerToString(targetDistance)+" pts)";
-     }
+      EmttTradeManagerPlanMoney(data,symbol,state.side,state.positionVolume,
+         state.entryPrice,state.plannedStop,state.plannedTarget,
+         (state.side>0 ? ask : bid),point,digits);
   }
 
 #endif // EMTT_TRADEMANAGER_MQH
