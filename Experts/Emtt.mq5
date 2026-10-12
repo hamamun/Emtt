@@ -4,16 +4,18 @@
 //| Phase 6: signal and trade plan                                    |
 //| Phase 7: self-learning signal filter                             |
 //| Phase 8: live trading - order, management, record                 |
+//| Phase 9: parameter-optimization persistence                       |
 //|                Spec: Emtt.md | Author: Ham | Coder: Arena        |
 //+------------------------------------------------------------------+
 #property copyright   "Author: Ham | Coder: Arena"
 #property link        ""
-#property version     "1.60"
+#property version     "1.70"
 #property description "Emtt V1.0 - MT5 Trading Expert Adviser."
 #property description "Phase 5: closed-bar volume flow (VWAP, profile, CVD) and higher-timeframe agreement."
 #property description "Phase 6: signal and trade plan (no orders)."
 #property description "Phase 7: self-learning signal filter."
 #property description "Phase 8: live trading - order, management, record."
+#property description "Phase 9: parameter-optimization persistence."
 #property description "Panel revamp: WHY removed, STATUS single-line, Summary Today/All-Time, dynamic width."
 #property description "Allowed analysis timeframes: M5 / M15 / M30 only."
 
@@ -29,10 +31,13 @@
 #include "../Include/Emtt/Emtt_Summary.mqh"
 #include "../Include/Emtt/Emtt_LearnFile.mqh"
 #include "../Include/Emtt/Emtt_Learning.mqh"
+#include "../Include/Emtt/Emtt_ParamFile.mqh"
+#include "../Include/Emtt/Emtt_ParamOpt.mqh"
 #include "../Include/Emtt/Emtt_Trade.mqh"
 #include "../Include/Emtt/Emtt_TradeManager.mqh"
 
 input long InpMagicNumber=20251007;   // Magic number
+input bool InpParamOptimization=true; // Parameter optimization ON/OFF
 
 input group "Auto Trading"
 input bool InpAutoTrading=false;      // Auto Trading ON/OFF
@@ -87,6 +92,7 @@ SEmttMtfContext            g_mtfContext;
 SEmttSignalState           g_signal;
 SEmttSummaryState          g_summary;
 SEmttLearningState         g_learning;
+SEmttParamOptState g_paramOpt;
 SEmttTradeState            g_trade;
 SEmttBrokerOffsetState     g_brokerOffset;
 SEmttRegimeMeasurements    g_snapshotMeasurements;
@@ -656,6 +662,12 @@ bool EmttReplayClosedHistory()
    // it back normalised and applies the cap - and the learned terms of the
    // newest closed bar are evaluated, so the signal call below sees exactly
    // the number of 19.5.
+   // 23.2: the replay uses the init-loaded bar but never collects evidence.
+   EmttParamOptEndNear(g_paramOpt,EMTT_LEARN_RESULT_CHART,
+                       g_signal.lastClose,g_signal.lastSequence,
+                       g_signal.lastBarTime,false);
+   g_paramOpt.liveCandle=false;
+   g_paramOpt.replaying=true;
    EmttLearningAttachAndLoad(rates[0].time);
 
    // Phase 6 (17.8): the replay rebuilds the four views and then evaluates
@@ -698,7 +710,8 @@ bool EmttReplayClosedHistory()
          EmttLearningSaveScores(learningScores);
          EmttLearningScaleScores(learningScores,g_learning.reading.scale);
          EmttSignalAdvance(g_signal,g_supertrend,g_smc,g_volumeFlow,g_mtf,
-                           signalMood,signalAtr,signalReplayBar[0].high,
+                           signalMood,EmttParamOptBar(g_paramOpt,signalMood),
+                           signalAtr,signalReplayBar[0].high,
                            signalReplayBar[0].low,signalReplayBar[0].close,
                            signalBid,signalAsk,signalSpread,g_timeframe,
                            g_evaluatedBarSequence-1,rates[0].time,
@@ -712,6 +725,7 @@ bool EmttReplayClosedHistory()
       else
          EmttLearningResume(rates[0].time,rates,signalMood);
      }
+   g_paramOpt.replaying=false;
    return true;
   }
 
@@ -927,14 +941,25 @@ bool EmttProcessLatestClosedBar(const bool forceFirstEvaluation)
       SEmttLearnScoreSnapshot learningScores;
       EmttLearningSaveScores(learningScores);
       EmttLearningScaleScores(learningScores,g_learning.reading.scale);
+      if(g_paramOpt.enabled && signalBar[0].time==barTime)
+        {
+         const int entryBar=(g_dynamic.thresholdFrozen ? g_dynamic.frozenThreshold :
+                             (g_trade.entryMoodBar>0 ? g_trade.entryMoodBar :
+                              EmttParamOptBar(g_paramOpt,signalMood)));
+         EmttParamOptBeginCandle(g_paramOpt,barTime,EmttOwnPositionOpen(),entryBar);
+        }
       EmttSignalAdvance(g_signal,g_supertrend,g_smc,g_volumeFlow,g_mtf,
-                        signalMood,signalAtr,signalBar[0].high,
+                        signalMood,EmttParamOptBar(g_paramOpt,signalMood),
+                        signalAtr,signalBar[0].high,
                         signalBar[0].low,signalBar[0].close,
                         signalBid,signalAsk,signalSpread,g_timeframe,
                         sequence,barTime,signalDigits,signalPoint,false);
       EmttLearningRestoreScores(learningScores);
       EmttConsumeSignalEvents(barTime,signalBar[0].high,signalBar[0].low,
                               signalSpread,signalAtr);
+      EmttParamOptimizationAdvance(signalAtr,signalBar[0].high,signalBar[0].low,
+                                    signalBar[0].close,signalBid,signalAsk,
+                                    sequence,barTime);
       EmttJournalSignalState(barTime);
      }
 
@@ -953,6 +978,9 @@ void EmttResetMarketState()
    // signal state is reset. Phase 7 (19.3): the same end closes the plan's
    // ticket and writes the old file, before the learning state is rebound
    // to the new symbol and timeframe.
+   EmttParamOptEndNear(g_paramOpt,EMTT_LEARN_RESULT_CHART,
+                       g_signal.lastClose,g_signal.lastSequence,
+                       g_signal.lastBarTime,false);
    EmttSignalChartChanged(g_signal,false);
    EmttConsumeSignalEvents(g_signal.lastBarTime,0.0,0.0,0,0.0);
    EmttSignalReset(g_signal);
@@ -998,6 +1026,7 @@ bool EmttAdoptChartContext(const bool journalTimeframeChange)
    g_symbolValidationBars=0;
    // New symbol and/or timeframe: bind the Summary counts to its file.
    EmttSummaryInit(g_summary,g_symbol,g_timeframe);
+   EmttParamOptimizationAttachAndLoad(iTime(g_symbol,g_timeframe,1));
 
    if(symbolChanged || classChanged)
       PrintFormat("Emtt | Symbol revalidated | %s (%s) -> %s (%s) | closed-bar context rebuilt",
@@ -1053,6 +1082,9 @@ void EmttSyncFrozenPositionContext()
         }
       if(!g_dynamic.thresholdFrozen && g_dynamic.initialized)
         {
+         // 23.6: reuse the existing entry snapshot, not a new GlobalVariable.
+         if(g_paramOpt.enabled && EmttParamBarApproved(g_trade.entryMoodBar))
+            g_dynamic.confidenceThreshold=g_trade.entryMoodBar;
          EmttDynamicFreezeAtEntry(g_dynamic);
          storeSnapshot=g_dynamic.thresholdFrozen;
         }
@@ -1061,6 +1093,8 @@ void EmttSyncFrozenPositionContext()
          GlobalVariableSet(key,(double)g_dynamic.frozenThreshold);
          GlobalVariablesFlush();
         }
+      if(g_dynamic.thresholdFrozen)
+         EmttParamOptFreezeAtEntry(g_paramOpt,g_dynamic.frozenThreshold);
      }
    else
      {
@@ -1099,6 +1133,9 @@ void EmttRefreshFoundation()
       // Closed applies immediately, without waiting for history or a new bar.
       EmttRegimeMarkMarketClosed(g_regimeState);
       // 17.7: the market closing ends any open plan; no evaluation runs.
+      EmttParamOptEndNear(g_paramOpt,EMTT_LEARN_RESULT_MARKET,
+                          g_signal.lastClose,g_signal.lastSequence,
+                          g_signal.lastBarTime,false);
       EmttSignalMarketClosed(g_signal,false);
       EmttConsumeSignalEvents(g_signal.lastBarTime,0.0,0.0,0,0.0);
       g_marketWasClosed=true;
@@ -1135,6 +1172,128 @@ void EmttRefreshFoundation()
    EmttTradeManagerRefresh();
    EmttSyncFrozenPositionContext();
    UpdatePanel();
+  }
+
+//+------------------------------------------------------------------+
+//| Phase 9: persistence belongs to the headers; the EA only wires  |
+//| init / decisions / deinit and the live, post-replay candle path. |
+//+------------------------------------------------------------------+
+void EmttParamOptimizationSaveOnExit()
+  {
+   if(!g_paramOpt.enabled || g_paramOpt.replaying) return;
+   datetime stamp=(g_paramOpt.lastLiveBarTime>0 ? g_paramOpt.lastLiveBarTime :
+                                                g_signal.lastBarTime);
+   for(int i=0;i<g_paramOpt.pendingCount;i++)
+      if(g_paramOpt.pending[i].resultTime>stamp) stamp=g_paramOpt.pending[i].resultTime;
+   // These broker outcomes already have real labels. Flush their evidence
+   // before shutdown, without evaluating a candle, a near idea, or a move.
+   // Otherwise removing the EA between closes would silently lose a result.
+   EmttParamOptimizationConsumeAccepted(stamp,stamp,false);
+   EmttParamFileSave(g_paramOpt.file,stamp);
+   if(g_paramOpt.carriedFile.loaded)
+      EmttParamFileSave(g_paramOpt.carriedFile,stamp);
+  }
+
+void EmttParamOptimizationAttachAndLoad(const datetime barTime)
+  {
+   if(!g_paramOpt.enabled) return;
+   const string tfName=EmttLearnTfName(g_timeframe);
+   if(g_paramOpt.file.loaded && g_paramOpt.file.symbol==g_symbol &&
+      g_paramOpt.file.tfName==tfName) return;
+   EmttParamOptimizationSaveOnExit();
+   EmttParamOptReset(g_paramOpt,true);
+   EmttParamFileLoad(g_paramOpt.file,g_symbol,g_timeframe,barTime);
+   EmttParamFileSave(g_paramOpt.file,barTime); // 23.7 init immediately after load
+   EmttParamOptUseLoadedBars(g_paramOpt);    // before any measurement replay
+  }
+
+bool EmttParamOptimizationTakeAccepted(SEmttParamFileState &file,
+                                      const datetime barEnd)
+  {
+   bool changed=false;
+   for(int i=0;i<g_paramOpt.pendingCount;i++)
+     {
+      if(g_paramOpt.pending[i].label<0 ||
+         g_paramOpt.pending[i].tfName!=file.tfName ||
+         g_paramOpt.pending[i].resultTime>barEnd) continue;
+      EmttParamOptAddAccepted(file.cells[g_paramOpt.pending[i].mood],
+                              g_paramOpt.pending[i].label);
+      EmttParamOptRemember(g_paramOpt,g_paramOpt.pending[i].key);
+      g_paramOpt.pending[i].label=-1;
+      changed=true;
+     }
+   return changed;
+  }
+
+// Fold labeled outcomes in order. Only the closed-candle caller may make
+// a decision; deinit folds pending real labels solely for its final write.
+void EmttParamOptimizationConsumeAccepted(const datetime barTime,
+                                          const datetime barEnd,
+                                          const bool allowDecision)
+  {
+   // Keep broker results in candle order even when a save needed a retry.
+   for(int i=1;i<g_paramOpt.pendingCount;i++)
+     {
+      const SEmttParamAccepted item=g_paramOpt.pending[i];
+      int j=i-1;
+      while(j>=0 && g_paramOpt.pending[j].resultTime>item.resultTime)
+        {
+         g_paramOpt.pending[j+1]=g_paramOpt.pending[j];
+         j--;
+        }
+      g_paramOpt.pending[j+1]=item;
+     }
+   EmttParamOptimizationTakeAccepted(g_paramOpt.file,barEnd);
+   // A position opened on another chart timeframe still belongs to that
+   // file. This does not read/relearn old tickets or pool their evidence.
+   const ENUM_TIMEFRAMES sources[3]={PERIOD_M5,PERIOD_M15,PERIOD_M30};
+   for(int source=0;source<3;source++)
+     {
+      const string name=EmttLearnTfName(sources[source]);
+      if(name==g_paramOpt.file.tfName) continue;
+      bool hasResult=false;
+      for(int i=0;i<g_paramOpt.pendingCount;i++)
+         if(g_paramOpt.pending[i].label>=0 &&
+            g_paramOpt.pending[i].tfName==name &&
+            g_paramOpt.pending[i].resultTime<=barEnd) hasResult=true;
+      if(!hasResult) continue;
+      if(!g_paramOpt.carriedFile.loaded ||
+         g_paramOpt.carriedFile.symbol!=g_paramOpt.file.symbol ||
+         g_paramOpt.carriedFile.tfName!=name)
+        {
+         if(g_paramOpt.carriedFile.loaded)
+            EmttParamFileSave(g_paramOpt.carriedFile,barTime);
+         EmttParamFileLoad(g_paramOpt.carriedFile,g_paramOpt.file.symbol,sources[source],barTime);
+         EmttParamFileSave(g_paramOpt.carriedFile,barTime);
+        }
+      EmttParamOptimizationTakeAccepted(g_paramOpt.carriedFile,barEnd);
+      if(allowDecision && EmttParamOptDecideFile(g_paramOpt.carriedFile,barTime))
+         EmttParamFileSave(g_paramOpt.carriedFile,barTime);
+     }
+   int kept=0;
+   for(int i=0;i<g_paramOpt.pendingCount;i++)
+      if(g_paramOpt.pending[i].label>=0)
+         g_paramOpt.pending[kept++]=g_paramOpt.pending[i];
+   g_paramOpt.pendingCount=kept;
+  }
+
+void EmttParamOptimizationAdvance(const double atr,const double high,
+                                  const double low,const double close,
+                                  const double bid,const double ask,
+                                  const long sequence,const datetime barTime)
+  {
+   if(!g_paramOpt.enabled || g_paramOpt.replaying || !g_paramOpt.liveCandle ||
+      !TfAllowed()) return;
+   const datetime barEnd=barTime+PeriodSeconds(g_timeframe);
+   EmttParamOptimizationConsumeAccepted(barTime,barEnd,true);
+
+   EmttParamOptAdvanceNear(g_paramOpt,g_signal,g_supertrend,g_smc,g_volumeFlow,
+                           atr,high,low,close,bid,ask,g_timeframe,sequence,barTime);
+   // 23.7's explicit write events: a tally-only candle is kept in memory;
+   // the next move/held move or deinit persists it. Never a periodic rewrite.
+   if(EmttParamOptDecideFile(g_paramOpt.file,barTime))
+      EmttParamFileSave(g_paramOpt.file,barTime);
+   g_paramOpt.liveCandle=false;
   }
 
 //+------------------------------------------------------------------+
@@ -1232,7 +1391,7 @@ void EmttLearningAttachAndLoad(const datetime barTime)
       return;
    const int digits=(int)SymbolInfoInteger(g_symbol,SYMBOL_DIGITS);
    EmttLearnFileLoad(g_learning.file,g_symbol,g_timeframe,digits,barTime);
-   EmttLearnFileSave(g_learning.file,barTime);
+   EmttLearnFileSave(g_learning.file,barTime,g_paramOpt.enabled);
    g_learning.modelDirty=true;
    g_learning.modelLabeled=0;
    g_learning.resumeChecked=false;
@@ -1354,10 +1513,23 @@ void EmttLearningRecordPlanStart(const datetime barTime,
                            EmttLearnSessionIndex(g_volumeFlow.sessionName),
                            EmttLearnVolIndex(g_dynamic.volatility),
                            estimate,spreadPts,g_signal.plan.startSequence);
+   if(g_paramOpt.enabled)
+     {
+      ticket.parRecorded=true;
+      ticket.parAtr=g_dynamic.atrPeriod;
+      ticket.parEr=g_dynamic.erPeriod;
+      ticket.parKamaFast=g_dynamic.kamaFast;
+      ticket.parKamaMedium=g_dynamic.kamaMedium;
+      ticket.parKamaSlow=g_dynamic.kamaSlow;
+      ticket.parStructureWindow=g_smc.structureWindow;
+      ticket.parVolumeWindow=g_volumeFlow.profileWindow;
+      ticket.parBar=g_signal.moodBar;
+      ticket.parMinRR=EmttPlanMinRiskReward(g_signal.mood);
+     }
    const int slot=EmttLearnFileAddPlan(g_learning.file,ticket);
    if(slot<0)
       return;
-   EmttLearnFileSave(g_learning.file,barTime);
+   EmttLearnFileSave(g_learning.file,barTime,g_paramOpt.enabled);
    EmttJournalPlanStart(barTime,spreadPts);
   }
 
@@ -1376,7 +1548,7 @@ void EmttLearningRecordEntryReached(const datetime barTime)
    EmttJournalEntryReached(g_learning.file.tickets[slot].side,
                            g_learning.file.tickets[slot].entry,
                            g_learning.file.digits,barTime);
-   EmttLearnFileSave(g_learning.file,barTime);
+   EmttLearnFileSave(g_learning.file,barTime,g_paramOpt.enabled);
   }
 
 void EmttLearningRecordPlanEnd(const datetime barTime,const double barHigh,
@@ -1424,7 +1596,10 @@ void EmttLearningRecordPlanEnd(const datetime barTime,const double barHigh,
      }
    EmttLearnFileCloseTicket(g_learning.file,slot,result,shared,exitPrice,
                             points,candles);
-   EmttLearnFileSave(g_learning.file,barTime);
+   if(g_paramOpt.liveCandle && EmttLearnLabelOf(ticket)<0)
+      EmttParamOptQueueAccepted(g_paramOpt,g_learning.file.tickets[slot],
+                                g_learning.file.symbol,g_learning.file.tfName,barTime);
+   EmttLearnFileSave(g_learning.file,barTime,g_paramOpt.enabled);
    EmttJournalPlanResult(ticket.side,result,exitPrice,ticket.entry,digits,
                          point,ticket.startSequence,g_signal.lastSequence,
                          shared,false,barTime);
@@ -1466,15 +1641,19 @@ bool EmttLearningApplyTradeEvent(SEmttLearnFileState &file,
       EmttLearnFileMarkTradeFilled(file,slot,fillMinute);
    if(closing && closeMinute>0 &&
       file.tickets[slot].tradeClosedTime==0)
-      EmttLearnFileMarkTradeClosed(file,slot,closeMinute,
-                                   g_trade.closedNetPoints);
+     {
+      EmttLearnFileMarkTradeClosed(file,slot,closeMinute,g_trade.closedNetPoints);
+      // Queue the original ticket's mood and timeframe once. Tallies and
+      // decisions run only at the next live close, never in this callback.
+      EmttParamOptQueueAccepted(g_paramOpt,file.tickets[slot],file.symbol,file.tfName,eventTime);
+     }
    if(g_trade.filledAt>0 &&
       file.tickets[slot].tradeFilledTime==0)
       return false;
    if(closing && g_trade.closedAt>0 &&
       file.tickets[slot].tradeClosedTime==0)
       return false;
-   return EmttLearnFileSave(file,eventTime);
+   return EmttLearnFileSave(file,eventTime,g_paramOpt.enabled);
   }
 
 bool EmttLearningSaveTradeEvent(const bool closing)
@@ -1662,6 +1841,11 @@ void EmttTradeManagerRefresh()
    EmttTradeManagerBuildRuntime(runtime);
    EmttTradeManagerObserve(g_trade,runtime.barTime);
    EmttLearningRecoverTradeContext();
+   // 23.6: an adopted trade keeps the actual entry bar from the existing
+   // snapshot, not the base bar the Phase 8 ticket binder reconstructs.
+   // The author-only `par` values remain unread by every decision.
+   if(g_paramOpt.enabled && g_paramOpt.positionFrozen && g_trade.positionOpen)
+      g_trade.entryMoodBar=g_paramOpt.frozenBar;
    EmttTradeManagerStep(g_trade,runtime,g_signal.plan,g_supertrend,g_smc,
                         g_volumeFlow,g_learning.file);
    EmttLearningRecordTradeEvents();
@@ -1791,7 +1975,8 @@ void EmttLearningRestorePlan(const SEmttLearnTicket &ticket,
    g_signal.combined=g_learning.reading.combined*
                      g_learning.reading.scale;
    g_signal.mood=mood;
-   g_signal.moodBar=EmttSignalMoodBar(mood);
+   const int learnedBar=EmttParamOptBar(g_paramOpt,mood);
+   g_signal.moodBar=(learnedBar>0 ? learnedBar : EmttSignalMoodBar(mood));
    g_signal.lastClose=newestClose;
    g_signal.lastBarTime=newestBarTime;
    g_signal.lastSequence=newestSequence;
@@ -1918,7 +2103,7 @@ void EmttLearningResume(const datetime barTime,const MqlRates &rates[],
          candles=(int)(endSequence-startSequence);
       EmttLearnFileCloseTicket(g_learning.file,slot,endedResult,endedShared,
                                endPrice,points,candles);
-      EmttLearnFileSave(g_learning.file,endBarTime);
+      EmttLearnFileSave(g_learning.file,endBarTime,g_paramOpt.enabled);
       EmttJournalPlanResult(ticket.side,endedResult,endPrice,ticket.entry,
                             digits,point,startSequence,endSequence,
                             endedShared,true,endBarTime);
@@ -1938,7 +2123,7 @@ void EmttLearningResume(const datetime barTime,const MqlRates &rates[],
          EmttLearnFileMarkReached(g_learning.file,slot,ticket.reachedBarTime);
          EmttJournalEntryReached(ticket.side,ticket.entry,digits,
                                  ticket.reachedBarTime);
-         EmttLearnFileSave(g_learning.file,barTime);
+         EmttLearnFileSave(g_learning.file,barTime,g_paramOpt.enabled);
         }
       if(barCount>0)
          EmttLearningRestorePlan(ticket,startSequence,newestSequence,
@@ -2310,6 +2495,9 @@ int OnInit()
    // symbol and timeframe is bound, loaded and rewritten by the replay.
    EmttLearnStateReset(g_learning);
    EmttTradeManagerInit(g_trade,g_symbol,g_timeframe,InpMagicNumber);
+   EmttParamOptReset(g_paramOpt,InpParamOptimization);
+   EmttParamOptimizationAttachAndLoad(iTime(g_symbol,g_timeframe,1));
+   if(g_paramOpt.enabled) EmttSyncFrozenPositionContext();
    // Panel revamp: Today / All-Time counts for this symbol + timeframe.
    EmttSummaryInit(g_summary,g_symbol,g_timeframe);
    EmttJournalTimeframeContext();
@@ -2334,6 +2522,7 @@ void OnDeinit(const int reason)
       EmttLearningRecordTradeEvents();
      }
    EmttSummarySave(g_summary); // flush the Summary counts
+   EmttParamOptimizationSaveOnExit();
    if(EmttOwnPositionOpen() && g_dynamic.thresholdFrozen)
      {
       GlobalVariableSet(EmttFrozenContextKey(),(double)g_dynamic.frozenThreshold);

@@ -99,6 +99,17 @@ struct SEmttLearnTicket
    datetime tradeFilledTime; // 21.13: zero until the plan became a trade
    datetime tradeClosedTime; // 21.13: zero while the broker position lives
    int      tradeNetPoints;  // real signed points, includes realized costs
+   // 23.8: grammar-only evidence recorded at start, never used by logic.
+   bool     parRecorded;
+   int      parAtr;
+   int      parEr;
+   int      parKamaFast;
+   int      parKamaMedium;
+   int      parKamaSlow;
+   int      parStructureWindow;
+   int      parVolumeWindow;
+   int      parBar;
+   double   parMinRR;
    long     startSequence;  // memory only, never written (19.3)
   };
 
@@ -157,6 +168,16 @@ void EmttLearnTicketReset(SEmttLearnTicket &ticket)
    ticket.tradeFilledTime=0;
    ticket.tradeClosedTime=0;
    ticket.tradeNetPoints=0;
+   ticket.parRecorded=false;
+   ticket.parAtr=0;
+   ticket.parEr=0;
+   ticket.parKamaFast=0;
+   ticket.parKamaMedium=0;
+   ticket.parKamaSlow=0;
+   ticket.parStructureWindow=0;
+   ticket.parVolumeWindow=0;
+   ticket.parBar=0;
+   ticket.parMinRR=0.0;
    ticket.startSequence=-1;
   }
 
@@ -419,7 +440,66 @@ bool EmttLearnPartTime(const string part,const string key,datetime &value)
    return(value>0);
   }
 
-string EmttLearnTicketLine(const SEmttLearnTicket &ticket,const int digits)
+// 23.8: optional, author-only evidence. These numbers are never features,
+// labels, model inputs, or parameter-optimization evidence.
+string EmttLearnParamPart(const SEmttLearnTicket &ticket)
+  {
+   return "par atr "+IntegerToString(ticket.parAtr)+
+          " er "+IntegerToString(ticket.parEr)+
+          " kama "+IntegerToString(ticket.parKamaFast)+","+
+          IntegerToString(ticket.parKamaMedium)+","+IntegerToString(ticket.parKamaSlow)+
+          " stwin "+IntegerToString(ticket.parStructureWindow)+
+          " vfwin "+IntegerToString(ticket.parVolumeWindow)+
+          " bar "+IntegerToString(ticket.parBar)+
+          " rrmin "+DoubleToString(ticket.parMinRR,1);
+  }
+
+// Strict positive int for author-only parameter fields. Do not turn a
+// corrupt 64-bit value into a different period through a narrowing cast.
+bool EmttLearnParamInt(const string word,int &value)
+  {
+   const int length=StringLen(word);
+   if(length<1 || length>10) return false;
+   for(int i=0;i<length;i++)
+     {
+      const ushort ch=StringGetCharacter(word,i);
+      if(ch<48 || ch>57) return false;
+     }
+   const long parsed=StringToInteger(word);
+   if(parsed<=0 || parsed>INT_MAX) return false;
+   value=(int)parsed;
+   return true;
+  }
+
+// Read solely to retain the part across a whole-file grammar rewrite.
+// A damaged optional part never discards the ticket's Phase 7/8 evidence.
+bool EmttLearnParseParamPart(const string tail,SEmttLearnTicket &ticket)
+  {
+   string words[],kama[];
+   if(StringSplit(tail,' ',words)!=14 || words[0]!="atr" || words[2]!="er" ||
+      words[4]!="kama" || words[6]!="stwin" || words[8]!="vfwin" ||
+      words[10]!="bar" || words[12]!="rrmin" || StringSplit(words[5],',',kama)!=3)
+      return false;
+   if(!EmttLearnParamInt(words[1],ticket.parAtr) ||
+      !EmttLearnParamInt(words[3],ticket.parEr) ||
+      !EmttLearnParamInt(kama[0],ticket.parKamaFast) ||
+      !EmttLearnParamInt(kama[1],ticket.parKamaMedium) ||
+      !EmttLearnParamInt(kama[2],ticket.parKamaSlow) ||
+      !EmttLearnParamInt(words[7],ticket.parStructureWindow) ||
+      !EmttLearnParamInt(words[9],ticket.parVolumeWindow) ||
+      !EmttLearnParamInt(words[11],ticket.parBar)) return false;
+   ticket.parMinRR=StringToDouble(words[13]);
+   if(ticket.parAtr<=0 || ticket.parEr<=0 || ticket.parKamaFast<=0 ||
+      ticket.parKamaMedium<=0 || ticket.parKamaSlow<=0 ||
+      ticket.parStructureWindow<=0 || ticket.parVolumeWindow<=0 ||
+      (ticket.parBar!=60 && ticket.parBar!=70 && ticket.parBar!=75) ||
+      (words[13]!="1.5" && words[13]!="2.0")) return false;
+   ticket.parRecorded=true;
+   return true;
+  }
+
+string EmttLearnTicketLine(const SEmttLearnTicket &ticket,const int digits,
+                           const bool includeParams=true)
   {
    string line="plan "+EmttLearnTimeText(ticket.startBarTime)+
                " | "+(ticket.side>0 ? "BUY" : "SELL")+
@@ -457,6 +537,8 @@ string EmttLearnTicketLine(const SEmttLearnTicket &ticket,const int digits)
                " | net "+(ticket.tradeNetPoints>=0 ? "+" : "")+
                IntegerToString(ticket.tradeNetPoints)+" pts";
      }
+   if(includeParams && ticket.parRecorded)
+      line+=" | "+EmttLearnParamPart(ticket);
    return line;
   }
 
@@ -562,6 +644,13 @@ bool EmttLearnParseTicketLine(const string line,const int digits,
    bool hasTradeNet=false;
    for(int i=13;i<count;i++)
      {
+      // A Phase 8 reader's feature/label path reads past this part.
+      if(parts[i]=="par") continue;
+      if(EmttLearnPartTail(parts[i],"par",tail))
+        {
+         if(!ticket.parRecorded) EmttLearnParseParamPart(tail,ticket);
+         continue;
+        }
       if(EmttLearnPartTime(parts[i],"reached",ticket.reachedBarTime))
          continue;
       if(EmttLearnPartTime(parts[i],"trade filled",ticket.tradeFilledTime))
@@ -813,7 +902,8 @@ void EmttLearnFileLoad(SEmttLearnFileState &state,const string symbol,
 //| or a second instance never leaves a half-written record. Quiet   |
 //| on success; one busy line on failure, one recovered line after.  |
 //+------------------------------------------------------------------+
-bool EmttLearnFileSave(SEmttLearnFileState &state,const datetime barTime)
+bool EmttLearnFileSave(SEmttLearnFileState &state,const datetime barTime,
+                       const bool includeParams=true)
   {
    if(!state.loaded || state.readOnly || state.filePath=="")
       return false;
@@ -838,7 +928,7 @@ bool EmttLearnFileSave(SEmttLearnFileState &state,const datetime barTime)
    FileWriteString(handle,EmttLearnCountsLine(state,barTime)+"\r\n");
    for(int i=0;i<state.ticketCount;i++)
       FileWriteString(handle,
-                      EmttLearnTicketLine(state.tickets[i],state.digits)+
+                      EmttLearnTicketLine(state.tickets[i],state.digits,includeParams)+
                       "\r\n");
    FileClose(handle);
    if(!FileMove(tmpPath,0,state.filePath,FILE_REWRITE))

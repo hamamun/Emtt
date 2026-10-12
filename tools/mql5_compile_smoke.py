@@ -193,6 +193,8 @@ def check_contract(paths: list[Path]) -> None:
         "Include/Emtt/Emtt_Summary.mqh",
         "Include/Emtt/Emtt_LearnFile.mqh",
         "Include/Emtt/Emtt_Learning.mqh",
+        "Include/Emtt/Emtt_ParamFile.mqh",
+        "Include/Emtt/Emtt_ParamOpt.mqh",
         "Include/Emtt/Emtt_Trade.mqh",
         "Include/Emtt/Emtt_TradeManager.mqh",
     }
@@ -554,7 +556,7 @@ def check_contract(paths: list[Path]) -> None:
         (ea, r"EmttLearningResume\(", "19.6 plan resume after the replay"),
         (ea, r"EmttLearnJournalResumed\(", "Learning resumed journal line"),
         (ea, r"EmttLearnFileSave\(g_learning\.file,", "the four write events save the record"),
-        (ea, r'#property version\s+"1\.60"', "Phase 7 version stamp"),
+        (ea, r'#property version\s+"1\.(?:60|70)"', "Phase 7 version stamp"),
         (ea, r'#property description "Phase 7: self-learning signal filter\."',
          "Phase 7 description line"),
     )
@@ -695,7 +697,7 @@ def check_contract(paths: list[Path]) -> None:
         (phase7_learn_file,
          r"trade filled|trade closed|tradeNetPoints", "trade ticket grammar"),
         (phase7_learning, r"ticket\.tradeNetPoints", "real-net learning label"),
-        (ea, r'#property version\s+"1\.60"', "Phase 8 version stamp"),
+        (ea, r'#property version\s+"1\.(?:60|70)"', "Phase 8 version stamp"),
         (ea, r'#property description "Phase 8: live trading - order, management, record\."',
          "Phase 8 description line"),
     )
@@ -765,6 +767,171 @@ def check_contract(paths: list[Path]) -> None:
                 raise RuntimeError(
                     f"Phase-8 {name} source breaks the learning-file boundary: {pattern}"
                 )
+
+    #--- Phase 9 (23.10): narrowly scoped parameter persistence ---------
+    param_file_path = ROOT / "Include" / "Emtt" / "Emtt_ParamFile.mqh"
+    param_opt_path = ROOT / "Include" / "Emtt" / "Emtt_ParamOpt.mqh"
+    param_file = param_file_path.read_text(encoding="utf-8")
+    param_opt = param_opt_path.read_text(encoding="utf-8")
+    phase9_markers = (
+        (param_file, r'EMTT_POPT_SUFFIX\s+"\.params"', "isolated .params suffix"),
+        (param_file, r'EMTT_POPT_VERSION\s+"Emtt_Params v1"', "six-line version"),
+        (param_file, r'EMTT_POPT_DIR\s+"Emtt_Learning"', "shared learning folder"),
+        (param_file, r"EMTT_POPT_CELLS\s+4", "four independent mood cells"),
+        (param_opt, r"EMTT_POPT_MIN_SAMPLES\s+20", "20/20 evidence gate"),
+        (param_opt, r"EMTT_POPT_NEAR_BAND\s+10", "10-point near-miss band"),
+        (param_opt, r"EMTT_POPT_LOOSE\s+0\.05", "inclusive loosen edge"),
+        (param_opt, r"EMTT_POPT_TIGHT\s+0\.20", "inclusive tighten edge"),
+        (param_opt, r"candidates\[3\]=\{60,70,75\}", "only approved bar candidates"),
+        (param_opt, r"EmttParamOptBeginCandle\(", "next-candle application and freeze"),
+        (param_opt, r"EmttParamOptAdvanceNear\(", "private paper near-miss lifecycle"),
+        (param_opt, r"EmttParamOptQueueAccepted\(", "live-only, deduplicated accepted evidence"),
+        (param_file, r"EmttParamFileLoad\(", "versioned load with cell-local recovery"),
+        (param_file, r"EmttParamFileSave\(", "whole-file persistence"),
+        (param_file, r"written==\(uint\)StringLen\(text\)", "partial writes rejected before rename"),
+        (ea, r"input bool InpParamOptimization\s*=\s*true", "enabled-by-default input"),
+        (ea, r"SEmttParamOptState g_paramOpt;", "one parameter-optimization state"),
+        (ea, r'Emtt_ParamFile\.mqh', "parameter-file include"),
+        (ea, r'Emtt_ParamOpt\.mqh', "pure optimizer include"),
+        (ea, r'\bEmttParamOptimizationAttachAndLoad\(', "load before replay"),
+        (ea, r'\bEmttParamOptimizationAdvance\(', "closed-candle wiring"),
+        (ea, r'\bEmttParamOptimizationSaveOnExit\(', "deinit persistence"),
+        (phase6_signal, r"const int learnedBar,", "23.3a learned-bar argument"),
+        (phase6_signal, r"state\.moodBar=\(learnedBar>0 \? learnedBar : EmttSignalMoodBar\(mood\)\);",
+         "23.3a single gate-line edit"),
+        (phase7_learn_file, r'"par atr "', "author-only parameter ticket part"),
+        (phase7_learn_file, r'EmttLearnPartTail\(parts\[i\],"par",tail\)', "reader skips optional part"),
+        (ea, r"ticket\.parBar=g_signal\.moodBar", "record the actual bar at plan start"),
+        (ea, r'#property version\s+"1\.70"', "Phase 9 version stamp"),
+        (ea, r'#property description "Phase 9: parameter-optimization persistence\."',
+         "Phase 9 description line"),
+    )
+    for source, pattern, description in phase9_markers:
+        if not re.search(pattern, source):
+            raise RuntimeError(f"missing Phase-9 rule: {description}")
+    if len(re.findall(r"\bSEmttParamOptState\s+g_paramOpt\s*;", ea)) != 1:
+        raise RuntimeError("Phase 9 must declare exactly one EA parameter-optimization state")
+    if not re.search(
+        r"input long InpMagicNumber[^\n]*\ninput bool InpParamOptimization[^\n]*\n\s*"
+        r'input group "Auto Trading"', ea
+    ):
+        raise RuntimeError("Parameter optimization must sit directly below magic, above Auto Trading")
+    if not (ea.find("Emtt_Learning.mqh") < ea.find("Emtt_ParamFile.mqh") <
+            ea.find("Emtt_ParamOpt.mqh") < ea.find("Emtt_Trade.mqh")):
+        raise RuntimeError("Phase-9 includes must follow learning: file, optimizer, then trade")
+
+    # 23.1: the eleven protected modules are byte-identical. The signal's
+    # only permitted changes can be reversed to its Phase-8 delivery hash.
+    frozen_phase8 = {
+        "Emtt_Dashboard.mqh": panel_digest,
+        "Emtt_DynamicParams.mqh": "24bd3519a4dccd6414474e6ff5854f9042a4237e96dd058ac4cccbde368ffdb8",
+        "Emtt_Regime.mqh": "d62dcf089a7baf51e7d40e68b8c960ecc1327735e7be630652f39edc8a97c01d",
+        "Emtt_Supertrend.mqh": "6b2d6a97abb7f4e683499da73d9012986da40f54dd013102daf83a6e5a115888",
+        "Emtt_SMC.mqh": "1691c923927429979c369be2c62e14b89afc834764f36f7fea33da6bc7146324",
+        "Emtt_VolumeFlow.mqh": "5f311e6fa62bc67f4235e9316cf9a4f295354487f3f77d3b54d16d571f0e2eb3",
+        "Emtt_MTF.mqh": "e12d61226ce59eb29a0a2ed8855e7eb7feeb59a3407f21cfcf9a6528a7665a88",
+        "Emtt_TradePlan.mqh": "e52a6005ff2ef2a7e75cef3c847c7ee80504bbf73fd6aa7028b03103fe2ba415",
+        "Emtt_Summary.mqh": "ade2b7e66f647c7595ef03d9bbf6640fdd19b2317f357678a474d6a1537e98f1",
+        "Emtt_Trade.mqh": "00eee02dc193fd4674483ab8b78d2b2bad9e0c2fdda83706f969f6451dbc2eb4",
+        "Emtt_TradeManager.mqh": "8cb5dd5e3466440b8ecc8f3913df99dc6ad783678561676b89caaa43d5b1b974",
+    }
+    for name, expected in frozen_phase8.items():
+        raw = (ROOT / "Include" / "Emtt" / name).read_bytes()
+        if hashlib.sha256(raw).hexdigest() != expected:
+            raise RuntimeError(f"Phase-9 scope violation: protected {name} changed")
+    signal_original = phase6_signal.replace("                       const int learnedBar,\n", "", 1)
+    signal_original = signal_original.replace(
+        "state.moodBar=(learnedBar>0 ? learnedBar : EmttSignalMoodBar(mood));",
+        "state.moodBar=EmttSignalMoodBar(mood);", 1
+    )
+    if hashlib.sha256(signal_original.encode()).hexdigest() != (
+        "3ef858d8261338f5d78013ec3c3b9ac8787dd7b1a80d23c5c0d2373ceeb6cb92"
+    ):
+        raise RuntimeError("Emtt_Signal.mqh changed beyond the argument and gate line of 23.3a")
+    learning_original = phase7_learning.replace(
+        "// 23.8: the grammar reads past `par`; the model deliberately ignores it.\n", "", 1
+    )
+    if hashlib.sha256(learning_original.encode()).hexdigest() != (
+        "2bd1c3eae2f85d1b9a939423470ba5d816a84428cadf983595b66db9c5e08acd"
+    ):
+        raise RuntimeError("Phase-9 learning features, weights, labels or model changed")
+
+    # The five guards of 23.10, retaining every Phase 2-8 guard above.
+    for path, source, name in (
+        (param_file_path, param_file, "parameter-file"),
+        (param_opt_path, param_opt, "parameter-optimization"),
+    ):
+        if not path.read_bytes().isascii():
+            raise RuntimeError(f"Phase-9 {name} header is not ASCII-only")
+        for pattern in forbidden_smc + phase8_order_tokens:
+            if re.search(pattern, strip_comments_and_strings(source)):
+                raise RuntimeError(f"Phase-9 {name} contains forbidden drawing/order token: {pattern}")
+        for pattern in forbidden_summary_files + (
+            r'\bTerminalInfoString\s*\(', r'\bFolderClean\s*\(',
+        ):
+            if re.search(pattern, strip_comments_and_strings(source)):
+                raise RuntimeError(f"Phase-9 {name} contains forbidden file/global token: {pattern}")
+    for pattern in forbidden_smc:
+        if re.search(pattern, ea):
+            raise RuntimeError(f"Phase-9 EA contains forbidden chart drawing token: {pattern}")
+    pure_opt_code = strip_comments_and_strings(param_opt)
+    if re.search(r"\b(?:File\w+|Folder\w+)\s*\(", pure_opt_code):
+        raise RuntimeError("Phase-9 pure optimizer reaches the file system directly")
+    if re.search(r"\b(?:iATR|iAMA|iBands|iCustom|CopyRates|CopyBuffer|TimeCurrent|TimeGMT|"
+                 r"TimeTradeServer|MathRand|MathSrand|GetTickCount|GetMicrosecondCount)\s*\(",
+                 pure_opt_code):
+        raise RuntimeError("Phase-9 pure optimizer creates measurements or reads a clock/chart")
+    for name, text in (("parameter-file", param_file), ("parameter-optimization", param_opt)):
+        for literal in re.findall(r'"([^"\n]*\[^"\n]*)"', text):
+            if chr(92) in escape_re.sub("", literal):
+                raise RuntimeError(f"Phase-9 {name} builds a path outside Emtt_Learning\\")
+
+    # Exactly three writable siblings, and exactly one .tmp rename in each.
+    writers = {
+        "Emtt_LearnFile.mqh": (phase7_learn_file, "EMTT_LEARN_EXT", ".learn"),
+        "Emtt_Summary.mqh": (summary, "EMTT_SUMMARY_EXT", ".summary"),
+        "Emtt_ParamFile.mqh": (param_file, "EMTT_POPT_SUFFIX", ".params"),
+    }
+    for name, (source, suffix_macro, suffix) in writers.items():
+        # Writing headers may open only their own temporary destination,
+        # or their own record for reading. A fourth suffix cannot slip in
+        # through an extra FileOpen while retaining the approved macro.
+        writer_code = strip_comments_and_strings(source)
+        for arguments in re.findall(r"\bFileOpen\s*\(([^)]*)\)", writer_code):
+            pieces = arguments.split(",")
+            if len(pieces) < 2:
+                raise RuntimeError(f"Phase-9 file guard: invalid FileOpen in {name}")
+            file_arg, flags = pieces[0].strip(), pieces[1].strip()
+            own_read = file_arg in ("filePath", "state.filePath") and (
+                "FILE_READ" in flags and "FILE_WRITE" not in flags
+            )
+            own_write = file_arg == "tmpPath" and (
+                "FILE_WRITE" in flags and "FILE_READ" not in flags
+            )
+            if not (own_read or own_write):
+                raise RuntimeError(f"Phase-9 file guard: {name} opens a non-record path")
+        if not re.search(rf'{suffix_macro}\s+"{re.escape(suffix)}"', source):
+            raise RuntimeError(f"Phase-9 file guard: unexpected suffix in {name}")
+        if 'state.filePath+".tmp"' not in source:
+            raise RuntimeError(f"Phase-9 file guard: {name} must write its own .tmp")
+        moves = re.findall(r"\bFileMove\s*\([^;]*\)", source)
+        if len(moves) != 1 or "tmpPath,0,state.filePath,FILE_REWRITE" not in moves[0]:
+            raise RuntimeError(f"Phase-9 file guard: {name} needs exactly one own-file rename")
+        for pattern in forbidden_summary_files + (r"\bFolderClean\s*\(",):
+            if re.search(pattern, source):
+                raise RuntimeError(f"Phase-9 file guard violation in {name}: {pattern}")
+    for path in paths:
+        code = strip_comments_and_strings(path.read_text(encoding="utf-8"))
+        if path.name not in writers and re.search(r"\b(?:File|Folder)\w+\s*\(", code):
+            raise RuntimeError(f"Phase-9 file access outside the three writing headers: {path.name}")
+    ea_code = strip_comments_and_strings(ea)
+    for api, count in (("iATR", 5), ("iAMA", 6), ("iBands", 1)):
+        if len(re.findall(rf"\b{api}\s*\(", ea_code)) != count:
+            raise RuntimeError("Phase-9 changed the existing chart-timeframe indicator handles")
+    if len(re.findall(r"\bGlobalVariable\w*\s*\(", ea)) != 11:
+        raise RuntimeError("Phase-9 GlobalVariable count must remain the Phase-2/6 baseline of 11")
+    if re.search(r"\.par[A-Z]\w*", strip_comments_and_strings(phase7_learning + param_opt)):
+        raise RuntimeError("Phase-9 ticket evidence is read by the model or decision rule")
 
 
 def run_metaeditor(paths: list[Path]) -> None:

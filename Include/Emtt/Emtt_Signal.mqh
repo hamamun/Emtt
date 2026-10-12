@@ -447,6 +447,7 @@ void EmttSignalAdvance(SEmttSignalState &state,
                        const SEmttVolumeFlowState &vf,
                        const SEmttMtfState &mtf,
                        const EEmttRegime mood,
+                       const int learnedBar,
                        const double atr,
                        const double barHigh,
                        const double barLow,
@@ -468,7 +469,7 @@ void EmttSignalAdvance(SEmttSignalState &state,
    state.digits=digits;
    state.point=point;
    state.mood=mood;
-   state.moodBar=EmttSignalMoodBar(mood);
+   state.moodBar=(learnedBar>0 ? learnedBar : EmttSignalMoodBar(mood));
    state.justEnded=false;
    state.signalStarted=false;
    state.endedResult=EMTT_PLAN_RESULT_NONE;
