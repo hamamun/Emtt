@@ -259,10 +259,10 @@ class MqlMirrorTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertRegex(dash, rf"#define {name}\s+C'{rgb[0]},{rgb[1]},{rgb[2]}'")
 
-    def test_input_sits_below_auto_trading_and_is_the_seventh(self):
+    def test_threshold_position_and_pending_followup_input_count(self):
         self.assertRegex(self.ea, r'input group "Auto Trading"\ninput bool InpAutoTrading=false;'
                                   r'[^\n]*\ninput int  InpAutoTradeAbove=56;\s*// Auto-trade above \(%\)')
-        self.assertEqual(len(re.findall(r"^input\s+(?!group\b)", self.ea, re.MULTILINE)), 7)
+        self.assertEqual(len(re.findall(r"^input\s+(?!group\b)", self.ea, re.MULTILINE)), 8)
         self.assertRegex(self.ea, r'#property version\s+"1\.90"')
 
     def test_header_is_ascii_and_pure(self):

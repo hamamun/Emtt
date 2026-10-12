@@ -3527,3 +3527,131 @@ No indicator, view weight, plan-builder, trailing, breakeven, partial, time-exit
 | `Include/Emtt/Emtt_TradeManager.mqh` | `db2e5d633f288e23439f1c7d5269f2f8dab7f9a7e70e9aaf6742d6aa97830577` | 17200 |
 | `Include/Emtt/Emtt_TradePlan.mqh` | `e52a6005ff2ef2a7e75cef3c847c7ee80504bbf73fd6aa7028b03103fe2ba415` | 2573 |
 | `Include/Emtt/Emtt_VolumeFlow.mqh` | `5f311e6fa62bc67f4235e9316cf9a4f295354487f3f77d3b54d16d571f0e2eb3` | 8648 |
+
+### Execution / monetary display follow-up (2026-10-12)
+
+This follow-up supersedes the earlier blank pre-fill money fields and adds
+execution validation without changing signal confidence or entry selection.
+
+- Before a new order is sent, recheck the existing plan against the executable
+  price and current closed-bar ATR. A pending entry over 2 ATR from the live
+  dealing price is held (not moved and not converted to a market chase).
+  Stop and target must be on the correct side, stop distance must remain
+  within 1–3 ATR, and reward/risk must meet the current regime's existing floor.
+  A held plan may be retried on a later closed candle by the existing scheduler.
+- Market-order sizing now uses the execution quote, not the old planned entry.
+  This is still pre-fill sizing; slippage can change the realized risk.
+- These checks apply to new submissions, not to cancellation of already accepted
+  pending orders. Existing GTC lifetime/cancellation rules remain unchanged.
+  No arbitrary expiry or confidence-to-market override has been introduced.
+- Signal-only money rows use proposed volume; pending rows use broker order
+  volume/entry; open-position rows use remaining volume and actual fill price.
+  `OrderCalcProfit` supplies estimates in account currency. Unavailable broker
+  calculations remain `--`, not fabricated zero values. Entry's `gap` is the
+  absolute monetary equivalent of the price distance, not margin or floating
+  P/L. SL/TP are signed estimates to the displayed planned levels, excluding
+  commission, swap and execution slippage. Planned SL is not proof of protection.
+- Pending details log the entry source, quote, ATR distance, actual submitted
+  SL/TP and GTC lifetime. The pending live block now reads the broker SL and
+  explicitly says `not set` when no broker stop exists. The stop-loss input
+  itself is unchanged.
+
+Demo acceptance: compile in MetaEditor; test BUY and SELL, pending and market,
+Auto Trading OFF previews, an account currency other than USD, partial closes,
+and a symbol lacking valid profit-calculation data. Verify the panel estimates
+against MT5's contract calculation, check live-gap rejection messages and ensure
+no order is submitted for invalid geometry/RR. Check that a valid limit order
+still places normally and an unprotected pending order says `Broker SL: not set`.
+Portable helper tests stub broker functions; they do not replace these checks.
+
+### Pending lifecycle follow-up (2026-10-12)
+
+This section supersedes the prior GTC-only lifetime and 35% pending-retention
+policy. Signal display/filled-position exit rules are unchanged.
+
+**Lifetime and freshness**
+
+- New input `InpPendingValidityBars=6`, clamped to 1–96. Six is a conservative
+  starting configuration, NOT an optimized/backtested lifetime. It corresponds
+  to 30/90/180 minutes on M5/M15/M30. Measure outcomes before tuning it.
+- Deadline = originating signal candle close + configured originating-TF bar
+  periods, capped by the setup's upper expected duration when available. Late
+  qualification does not buy a fresh lifetime. Expired setups are not sent.
+- The pending order now exposes the LIVE TRADE / PENDING block (superseding
+  Phase 8's position-only visibility), so expiry and actual broker protection
+  are visible, with no fabricated floating P/L for an unfilled order.
+- Pending validity and expected trade duration are separate panel values.
+  The latter still describes the position/target estimate, not order expiry.
+- Use `ORDER_TIME_SPECIFIED` if the symbol supports it. Otherwise use GTC only
+  if supported, with an explicit EA-only expiry warning in journal and panel.
+  EA-only cancellation cannot operate offline or without trading permission.
+  Other expiration-mode-only symbols are held rather than silently weakening
+  expiry. A broker rejection of a supported mode is not silently retried as GTC.
+- Revalidate on closed data: original plan identity/direction, confidence at
+  least the current auto-trade threshold, originating block far edge, and entry
+  reach <=2 current ATR from the closed price. Capture the original block edge
+  once. Do not switch to whatever block is nearest later. Reject a new pending
+  submission if that original edge cannot be reconstructed or is invalidated.
+- Fresh executable-side quotes (Bid for a BUY's liquidation levels, Ask for a
+  SELL's) can invalidate the target/stop before a candle closes. Polling still
+  runs on the one-second timer; this is not a guarantee against intratick fills.
+
+**Cancellation/reconciliation**
+
+- Partial fill: cancel only the unfilled remainder and manage the real position.
+- Emtt Auto Trading input OFF: cancel owned pending orders; continue managing
+  positions. Disabling MT5/EA trading permission can prevent cancellation; do not
+  confuse that platform permission with the Emtt input.
+- Expiry, confirmed market closure, target/stop invalidation, original block
+  break, original plan end/reversal, below-threshold confidence, or closed-bar
+  distance beyond 2 ATR requests cancellation. Cancellation intent is sticky:
+  a subsequent rebound does not revive an already-invalidated execution attempt.
+- `OrderDelete()` boolean is not confirmation. Check retcode, live order list,
+  and terminal order history. If cancellation loses to a fill, adopt/manage the
+  position. Retain an unresolved order until history can establish its outcome.
+  Retry no faster than every five seconds. Never report a failed delete as a
+  successful cancellation. Broker-state reconciliation is journalled separately.
+- Confirmed cancellation/expiry is not a position close and does not fabricate
+  a trade loss or trade-fill record. The pre-existing hypothetical signal-plan
+  learning/statistics remain a separate mechanism; their candle-based outcomes
+  are not proof of a real broker fill. This patch does not rewrite that model.
+
+**Persistence, restart and migration**
+
+- A terminal-global execution lease, namespaced by broker server/account/symbol/
+  magic, stores original timeframe, plan timestamp, entry, planned SL/TP, block
+  edge, ATR, deadline, cancellation intent and recovery status. Write a valid
+  marker last and flush before submission. Store a broker receipt after acceptance;
+  a narrow setup-time/price match handles a crash between acceptance and receipt.
+- A submitted block-edge/side/timeframe is retired before sending. This prevents
+  duplicated ambiguous submissions and re-creating the same cancelled/expired
+  entry after replay. A different block edge qualifies as a fresh execution
+  opportunity. Confirmed submission failures also remain retired: safety over
+  automatic retry. This is deliberately more conservative than the old policy.
+- Switching timeframe never applies the new timeframe's score to the old order.
+  Original metadata and deadline survive. Missing original analysis receives a
+  60-second recovery grace, then cancellation. Return to the originating chart
+  timeframe during that grace if you want that setup to remain eligible.
+  No parallel background signal engine for the old timeframe is created.
+- Grace also covers ordinary startup/indicator delays. It does not postpone an
+  expired deadline, an Auto Trading OFF cancellation or partial-fill cleanup.
+  Existing pre-upgrade orders without trustworthy metadata are not granted a
+  new lifetime: recover matching context where possible, otherwise cancel after
+  grace. Do not infer a new expiry from the current chart.
+- Terminal globals are local to this MT5 installation (including the tester's
+  environment). They are not portable to another terminal/VPS and have MT5's
+  native retention rules. Missing metadata fails closed. Do not run multiple
+  Emtt instances with the same symbol and magic concurrently; the existing
+  one-owned-trade model and single lease assume one controlling instance.
+- The patch does not change broker SL defaults, chase missed entries at market,
+  or automatically close a filled position when its pending-entry deadline passes.
+
+**Validation / deployment**
+
+The portable tests execute production pure policy, lease helpers and cancellation
+logic with stubbed broker APIs. A MetaEditor compile and demo acceptance remain
+mandatory: the Linux tools cannot certify broker API signatures or execution.
+See `tests/PENDING_ACCEPTANCE.md`. Backtest/demo measurement of lifetime,
+missed/stale fills and cancellation reasons is still required before claiming
+that any setting is optimal; no historical price dataset or live broker was
+available in this development environment.

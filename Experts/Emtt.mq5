@@ -10,6 +10,7 @@
 #property copyright   "Author: Ham | Coder: Arena"
 #property link        ""
 #property version     "1.90"
+// Keep combined description text below MQL5's 511-character limit.
 #property description "Emtt V1.0 - MT5 Trading Expert Adviser."
 #property description "Phase 5: closed-bar volume flow (VWAP, profile, CVD) and higher-timeframe agreement."
 #property description "Phase 6: signal and trade plan (no orders)."
@@ -18,7 +19,7 @@
 #property description "Phase 9: parameter-optimization persistence."
 #property description "Phase 10: tick-level CVD divergence detection for the trailing stop."
 #property description "Phase 11: graded confidence tiers and continuous signal display."
-#property description "Panel revamp: WHY removed, STATUS single-line, Summary Today/All-Time, dynamic width."
+// Panel revamp: WHY removed, STATUS single-line, Summary Today/All-Time, dynamic width.
 #property description "Allowed analysis timeframes: M5 / M15 / M30 only."
 
 #include "../Include/Emtt/Emtt_Dashboard.mqh"
@@ -49,6 +50,7 @@ input int  InpAutoTradeAbove=56;      // Auto-trade above (%)
 input ENUM_EMTT_LOT_MODE InpLotMode=EMTT_LOT_AUTO;  // Lot size: Auto / Minimum
 input bool InpMarginCheck=false;      // Require free-margin check
 input bool InpPlaceStopLoss=false;    // Place stop loss with the order
+input int InpPendingValidityBars=6;   // Pending entry validity (1-96 bars)
 
 //--- Chart / instrument context -------------------------------------
 string          g_symbol="";
@@ -615,6 +617,24 @@ bool EmttReplayClosedHistory()
    g_smc=replaySmc;
    g_snapshotVolatility=g_dynamic.volatility;
    g_evaluatedBarSequence=sequence;
+   // Do not publish a completed replay until the newest closed candle can
+   // be evaluated. HTF history/indicator buffers can arrive asynchronously.
+   // Retry on the next timer, before any learning load or signal events.
+   MqlRates signalReplayBar[1];
+   double signalAtr=0.0;
+   MqlTick signalTick;
+   if(!EmttSignalViewsReady(g_supertrend,g_smc,g_volumeFlow,g_mtf) ||
+      CopyRates(g_symbol,g_timeframe,1,1,signalReplayBar)!=1 ||
+      signalReplayBar[0].time!=rates[0].time ||
+      !EmttCopyOne(EmttAtrHandle(g_dynamic.atrPeriod),0,1,signalAtr) ||
+      !EmttSigValidPositive(signalAtr) ||
+      !SymbolInfoTick(g_symbol,signalTick) ||
+      !EmttSigValidPositive(signalTick.bid) ||
+      !EmttSigValidPositive(signalTick.ask))
+     {
+      g_snapshotReady=false;
+      return false;
+     }
    g_lastClosedBarTime=rates[0].time;
    g_historyAvailable=g_historyRequired;
    PrintFormat("Emtt | Parameters resolved | symbol %s | class %s | volatility %s | ATR %d | ER %d | KAMA %d/%d/%d | confidence threshold %d%% | regime %s | bar %s",
@@ -685,24 +705,10 @@ bool EmttReplayClosedHistory()
    // is not run for it, because the gap is checked against the plan's own
    // levels and the signal is next evaluated at the first post-replay
    // closed candle.
-   MqlRates signalReplayBar[1];
-   if(CopyRates(g_symbol,g_timeframe,1,1,signalReplayBar)==1 &&
-      signalReplayBar[0].time==rates[0].time)
+   // Inputs were checked before loading persistent learning state above.
      {
-      double signalAtr=0.0;
-      EmttCopyOne(EmttAtrHandle(g_dynamic.atrPeriod),0,1,signalAtr);
-      MqlTick signalTick;
-      double signalBid=0.0,signalAsk=0.0;
-      if(SymbolInfoTick(g_symbol,signalTick))
-        {
-         signalBid=signalTick.bid;
-         signalAsk=signalTick.ask;
-        }
-      else
-        {
-         signalBid=SymbolInfoDouble(g_symbol,SYMBOL_BID);
-         signalAsk=SymbolInfoDouble(g_symbol,SYMBOL_ASK);
-        }
+      const double signalBid=signalTick.bid;
+      const double signalAsk=signalTick.ask;
       const double signalPoint=SymbolInfoDouble(g_symbol,SYMBOL_POINT);
       const int signalDigits=(int)SymbolInfoInteger(g_symbol,SYMBOL_DIGITS);
       int signalSpread=0;
@@ -980,6 +986,24 @@ bool EmttProcessLatestClosedBar(const bool forceFirstEvaluation)
 //+------------------------------------------------------------------+
 //| Revalidate symbol class every 100 newly processed closed bars    |
 //+------------------------------------------------------------------+
+// Reset startup bookkeeping without closing plans or writing learning files.
+// OnInit must not inherit a ready snapshot from a previous chart context.
+void EmttResetFoundationSnapshot()
+  {
+   g_historyRequired=EmttResolveHistoryRequired(g_timeframe);
+   g_marketWasClosed=false;
+   g_snapshotReady=false;
+   g_snapshotRegime=EMTT_REGIME_UNKNOWN;
+   g_snapshotVolatility=EMTT_VOL_UNKNOWN;
+   g_snapshotPercentile=-1.0;
+   g_snapshotBarTime=0;
+   g_lastClosedBarTime=0;
+   g_evaluatedBarSequence=0;
+   g_historyAvailable=0;
+   g_marketOpen=false;
+   g_sessionName="--";
+  }
+
 void EmttResetMarketState()
   {
    // 17.7: a symbol or timeframe change ends any open plan before the
@@ -999,16 +1023,7 @@ void EmttResetMarketState()
    EmttSmcReset(g_smc);
    EmttVfReset(g_volumeFlow);
    EmttMtfReset(g_mtf,g_mtfContext); // frees the HTF handle set as well
-   g_historyRequired=EmttResolveHistoryRequired(g_timeframe);
-   g_marketWasClosed=false;
-   g_snapshotReady=false;
-   g_snapshotRegime=EMTT_REGIME_UNKNOWN;
-   g_snapshotVolatility=EMTT_VOL_UNKNOWN;
-   g_snapshotPercentile=-1.0;
-   g_snapshotBarTime=0;
-   g_lastClosedBarTime=0;
-   g_evaluatedBarSequence=0;
-   g_historyAvailable=0;
+   EmttResetFoundationSnapshot();
   }
 
 bool EmttAdoptChartContext(const bool journalTimeframeChange)
@@ -1789,10 +1804,13 @@ void EmttTradeManagerBuildRuntime(SEmttTradeRuntime &runtime)
    runtime.magic=InpMagicNumber;
    runtime.autoTrading=InpAutoTrading;
    runtime.autoTradeAbove=g_autoTradeAbove;
+   runtime.pendingValidityBars=EmttPendingBars(InpPendingValidityBars);
+   runtime.connected=(bool)TerminalInfoInteger(TERMINAL_CONNECTED);
    runtime.lotMode=(int)InpLotMode;
    runtime.marginCheck=InpMarginCheck;
    runtime.placeStopLoss=InpPlaceStopLoss;
-   runtime.terminalAllowed=(bool)TerminalInfoInteger(TERMINAL_TRADE_ALLOWED);
+   runtime.terminalAllowed=((bool)TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) &&
+                            (bool)MQLInfoInteger(MQL_TRADE_ALLOWED));
    runtime.accountAllowed=(bool)AccountInfoInteger(ACCOUNT_TRADE_ALLOWED);
    runtime.chartCompatible=TfAllowed();
    runtime.learningLoaded=(runtime.chartCompatible &&
@@ -1822,11 +1840,18 @@ void EmttTradeManagerBuildRuntime(SEmttTradeRuntime &runtime)
    runtime.barTime=iTime(g_symbol,g_timeframe,1);
    if(runtime.barTime<=0)
       runtime.barTime=g_lastClosedBarTime;
+   runtime.analysisReady=(g_snapshotReady && runtime.viewsReady &&
+      g_signal.viewsReady && g_signal.lastBarTime==runtime.barTime &&
+      runtime.barTime>0 && g_signal.confidence>=0);
+   runtime.quoteFresh=false;
    MqlTick tick;
    if(SymbolInfoTick(g_symbol,tick))
      {
       runtime.bid=tick.bid;
       runtime.ask=tick.ask;
+      const datetime quoteNow=(TimeTradeServer()>0 ? TimeTradeServer() : TimeCurrent());
+      runtime.quoteFresh=(runtime.connected && tick.time>0 && tick.time<=quoteNow+5 &&
+         quoteNow-tick.time<=60 && tick.bid>0.0 && tick.ask>=tick.bid);
      }
    else
      {
@@ -1843,6 +1868,7 @@ void EmttTradeManagerBuildRuntime(SEmttTradeRuntime &runtime)
                                             TimeCurrent());
    runtime.marketOpen=EmttMarketIsOpen(g_symbol,marketTf,now,
                                        iTime(g_symbol,marketTf,0));
+   runtime.marketKnown=(runtime.connected && iTime(g_symbol,marketTf,0)>0);
   }
 
 void EmttTradeManagerRefresh()
@@ -2261,8 +2287,8 @@ void FillPanel(SEmttPanelData &d)
    d.showLive=false;
 
    // Phase 2 fills only the fields it actually measures; Phase 6 fills
-   // Rows 2-8 from the signal state. The money part of Rows 4-6 is "--"
-   // in every state: no trade size exists before the safety step (17.6).
+   // Rows 2-8 from the signal state. Money values are estimated from proposed
+   // volume; the manager replaces them with broker volume when available.
    d.regime="Regime: --";
    d.signal="SIGNAL: --";
    // Phase 11 (28.2): "--%" only while no number exists (loading,
@@ -2300,11 +2326,18 @@ void FillPanel(SEmttPanelData &d)
          d.session="Session: "+g_sessionName+" | Expected Duration:";
          d.regime="Regime: --";
          d.why="--";
-         d.status=StringFormat("Waiting — Loading chart history (%d/%d candles)",
-                               g_historyAvailable,g_historyRequired);
+         if(g_historyAvailable<g_historyRequired)
+            d.status=StringFormat("Waiting — Loading chart history (%d/%d candles)",
+                                  g_historyAvailable,g_historyRequired);
+         else
+            d.status="Waiting — Preparing closed-bar indicators / higher timeframe";
         }
       else
         {
+         // Confidence belongs to the evaluated candle, not to plan validity.
+         // A stop/target rejection must never hide an already computed number.
+         d.confidence=EmttTierConfidenceRow(g_signal.viewsReady ?
+                                            g_signal.confidence : -1);
          // Row 8: the session is always measured; the Expected Duration
          // fills only while a plan is showing.
          if(sigReady)
@@ -2331,8 +2364,6 @@ void FillPanel(SEmttPanelData &d)
                d.signal="SIGNAL: "+EmttGlyph(EMTT_SIG_GLYPH_WAIT)+" WAIT";
             // Row 3: the real number and its tier whenever one exists,
             // including the below-35% WAIT (28.2).
-            d.confidence=EmttTierConfidenceRow(g_signal.viewsReady ?
-                                               g_signal.confidence : -1);
             if(planShowing)
               {
                // Rows 4-7: the fixed plan levels. Row 4's distance is
@@ -2360,6 +2391,20 @@ void FillPanel(SEmttPanelData &d)
                d.takeProfit="Take Profit: "+
                             DoubleToString(g_signal.plan.target,digits)+
                             " / --  ("+IntegerToString(targetPts)+" pts)";
+               // Signal-only preview: proposed volume, not an executed trade.
+               double tickValue=SymbolInfoDouble(g_symbol,SYMBOL_TRADE_TICK_VALUE_LOSS);
+               if(tickValue<=0.0)
+                  tickValue=SymbolInfoDouble(g_symbol,SYMBOL_TRADE_TICK_VALUE);
+               const double previewLots=EmttTradeResolveLots((int)InpLotMode,
+                  AccountInfoDouble(ACCOUNT_BALANCE),g_signal.plan.entry,
+                  g_signal.plan.stop,SymbolInfoDouble(g_symbol,SYMBOL_TRADE_TICK_SIZE),
+                  tickValue,g_signal.confidence,g_trade.newsSizeMultiplier,
+                  SymbolInfoDouble(g_symbol,SYMBOL_VOLUME_MIN),
+                  SymbolInfoDouble(g_symbol,SYMBOL_VOLUME_MAX),
+                  SymbolInfoDouble(g_symbol,SYMBOL_VOLUME_STEP));
+               EmttTradeManagerPlanMoney(d,g_symbol,g_signal.plan.side,previewLots,
+                  g_signal.plan.entry,g_signal.plan.stop,g_signal.plan.target,
+                  dealing,point,digits);
                d.riskReward="Risk:Reward: 1:"+
                             DoubleToString(g_signal.plan.riskReward,1);
               }
@@ -2528,6 +2573,8 @@ int OnInit()
    EmttVfReset(g_volumeFlow);
    EmttMtfReset(g_mtf,g_mtfContext);
    EmttSignalReset(g_signal);
+   EmttResetFoundationSnapshot();
+   g_symbolValidationBars=0;
    // Phase 7 (19.3): the learning state starts empty; the record of this
    // symbol and timeframe is bound, loaded and rewritten by the replay.
    EmttLearnStateReset(g_learning);
@@ -2537,6 +2584,9 @@ int OnInit()
    EmttTickDivReset(g_tickDiv);
    // Phase 11 (28.4): whole numbers 35..100; anything else is clamped once.
    g_autoTradeAbove=EmttTierAutoTradeAbove(InpAutoTradeAbove);
+   if(EmttPendingBars(InpPendingValidityBars)!=InpPendingValidityBars)
+      PrintFormat("Emtt | Pending validity clamped | requested %d bars | using %d",
+                  InpPendingValidityBars,EmttPendingBars(InpPendingValidityBars));
    if(g_autoTradeAbove!=InpAutoTradeAbove)
       PrintFormat("Emtt | Auto-trade above %d%% is outside %d-%d | using %d%%",
                   InpAutoTradeAbove,EMTT_TIER_AUTO_MIN,EMTT_TIER_AUTO_MAX,

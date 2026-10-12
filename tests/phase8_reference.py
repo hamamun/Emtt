@@ -751,10 +751,26 @@ DIAMOND_GLYPH = "\u25c6"  # the live-block header mark (Emtt_G_DIAMOND)
 def live_block(position: Optional[LivePosition], *, point: float,
                digits: int, volume_digits: int, timeframe_name: str = "M15",
                currency: str = "$", pending: bool = False) -> Optional[dict[str, str]]:
-    """Rows 11-14 exist for a live position; a pending order alone shows
-    only Row 10 (21.12), so the block is None while nothing is filled."""
-    if position is None or pending:
+    """Position block, plus the pending follow-up's visible protection block.
+
+    This compact reference models the recovering pending state; production
+    expiry/remaining-time policy is tested directly in test_pending_lifecycle.
+    """
+    if position is None:
         return None
+    if pending:
+        side_name = "BUY" if position.side == BUY else "SELL"
+        stop_text = p7.fmt_price(position.stop, digits) if position.stop > 0 else "not set"
+        tp_text = p7.fmt_price(position.tp1, digits) if position.tp1 > 0 else "--"
+        return {
+            "header": f"{DIAMOND_GLYPH} LIVE TRADE {DASH} PENDING",
+            "ticket": (f"Order: {position.ticket} | {side_name} "
+                       f"{position.volume:.{volume_digits}f} lots @ {position.entry:.{digits}f}"),
+            "floating": "Floating P/L: -- (pending order)",
+            "live_sl": f"Broker SL: {stop_text} | TP1: {tp_text} TP2: --",
+            "protect": ("Pending validity: recovering (EA-only; keep MT5 online)"
+                        f" | Expected trade duration: {position.expected_duration}"),
+        }
     side_name = "BUY" if position.side == BUY else "SELL"
     signed_points = ((position.current - position.entry) * position.side / point
                      if point > 0 else 0.0)

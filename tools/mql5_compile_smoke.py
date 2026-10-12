@@ -932,6 +932,11 @@ def check_contract(paths: list[Path]) -> None:
     for source, name in ((trade, "trade"), (manager, "trade-manager")):
         code = strip_comments_and_strings(source)
         for pattern in forbidden_phase8_files:
+            # Pending lifecycle follow-up: only the broker-facing manager may
+            # persist its isolated execution lease in terminal globals. The
+            # learning files and pure trading header remain protected.
+            if name == "trade-manager" and "GlobalVariable" in pattern:
+                continue
             if re.search(pattern, code):
                 raise RuntimeError(
                     f"Phase-8 {name} source breaks the learning-file boundary: {pattern}"
@@ -1226,7 +1231,7 @@ def check_phase10(paths: list[Path], ea: str, trade: str, manager: str) -> None:
             raise RuntimeError(f"Phase-10 scope violation: protected {name} changed")
 
     # 25.2 / 25.13: no new input, handle, file or GlobalVariable.
-    inputs = re.findall(r"^input\s+(?!group\b)(?![^\n]*InpAutoTradeAbove)", ea, re.MULTILINE)
+    inputs = re.findall(r"^input\s+(?!group\b)(?![^\n]*InpAutoTradeAbove)(?![^\n]*InpPendingValidityBars)", ea, re.MULTILINE)
     if len(inputs) != 6:
         raise RuntimeError("Phase 10 adds no input: six inputs total")
     if re.search(r"^input[^\n]*(?:[Dd]iverg|[Tt]ick)", ea, re.MULTILINE):
@@ -1335,8 +1340,18 @@ def check_phase11(paths: list[Path], ea: str, trade: str, manager: str) -> None:
     if min(order) < 0 or order != sorted(order):
         raise RuntimeError("Phase-11 tier include must sit between TradePlan and Signal")
     inputs = re.findall(r"^input\s+(?!group\b)", ea, re.MULTILINE)
-    if len(inputs) != 7:
-        raise RuntimeError("Phase 11 adds exactly one input: seven inputs total")
+    if len(inputs) != 8:
+        raise RuntimeError("Phase 11 plus pending validity: eight inputs total")
+    if not re.search(r"^input int InpPendingValidityBars=6;", ea, re.MULTILINE):
+        raise RuntimeError("Pending validity default must be six bars")
+    pending_path = ROOT / "Include" / "Emtt" / "Emtt_Pending.mqh"
+    if "Emtt_Pending.mqh" not in {path.name for path in paths}:
+        raise RuntimeError("Pending policy must be in the include graph")
+    pending_code = strip_comments_and_strings(pending_path.read_text())
+    if re.search(r"\b(?:Order|Position|File|Folder|GlobalVariable|SymbolInfo|Copy|TimeCurrent|TimeTradeServer)\w*\s*\(", pending_code):
+        raise RuntimeError("Pending policy must remain pure logic")
+    if '"Emtt_P_%I64d_%I64d"' not in manager or "ACCOUNT_LOGIN" not in manager or "ACCOUNT_SERVER" not in manager:
+        raise RuntimeError("Pending lease must be namespaced by broker/account")
     if "Emtt_Tier.mqh" not in {path.name for path in paths}:
         raise RuntimeError("Emtt_Tier.mqh is not in the EA include graph")
     if not tier_path.read_bytes().isascii():
