@@ -2965,7 +2965,11 @@ No tuning of any measurement parameter (frozen by 23.4, with the structural reas
 
 ## 24. Phase 9 — Done When
 
-**Status: SPEC WRITTEN (2026-10-11) — NOT YET BUILT.** Every bullet below must hold before the phase is called implemented. The portable bullets are proven by `python -m unittest discover -s tests -v`, `python tools/mql5_compile_smoke.py` and `python tools/mql5_parser_check.py`; the live-terminal bullets are the author's to confirm on a real MT5 chart, exactly as sections 10, 12, 14, 16, 18, 20 and 22 were, and the status stamps of this section are appended only when they pass.
+**Historical status (2026-10-11): SPEC WRITTEN — NOT YET BUILT.** Every bullet below must hold before the phase is called implemented. The portable bullets are proven by `python -m unittest discover -s tests -v`, `python tools/mql5_compile_smoke.py` and `python tools/mql5_parser_check.py`; the live-terminal bullets are the author's to confirm on a real MT5 chart, exactly as sections 10, 12, 14, 16, 18, 20 and 22 were, and the status stamps of this section are appended only when they pass.
+
+**Status: PHASE 9 VERIFIED BY THE AUTHOR ON A REAL MT5 CHART (2026-10-12).** Per Ham's explicit confirmation, the live-terminal acceptance checks (a)–(h) of this section — OFF vs ON behaviour, `.params` file appearance, near-miss journal lines, 20/20 one-step bar moves, restart resume, file-delete reset, unchanged panel layout, and H1 rule-19 — are confirmed working on a real MT5 chart, exactly as sections 10, 12, 14, 16, 18, 20 and 22 were. The native MetaEditor compile required by that live run is settled by it. Phase 9 is closed; no later phase reopens it.
+
+**Verification rerun (2026-10-12, in this workspace).** The three portable gates were re-run on the Phase 9 tree at this stamp: `python -m unittest discover -s tests -v` → **522 tests, all passing**; `python tools/mql5_compile_smoke.py` → exit 0 over all 17 repository MQL sources; `python tools/mql5_parser_check.py` → exit 0, **17 MQL source(s) parsed, 0 syntax error(s)**, negative control rejected first, sha256 and node counts matching the delivery record below.
 
 - The eleven Phase 1–8 modules outside 23.1 are byte-identical; `Emtt_Signal.mqh` carries only the 23.3a edit — the `learnedBar` argument and the one line that reads it — and `Emtt_LearnFile.mqh` and `Emtt_Learning.mqh` change only as 23.1 says; the inputs are the magic number, the new `Parameter optimization` directly below it, and the four of 21.3 under `Auto Trading`; no new chart-timeframe handle and no GlobalVariable exists.
 - `Emtt_ParamOpt.mqh` and `Emtt_ParamFile.mqh` are in the required-source set with every Phase 9 marker of 23.10, and the five guards hold — the file guard allowing exactly `.learn`, `.summary` and `.params` inside `Emtt_Learning\`.
@@ -3034,4 +3038,280 @@ The Phase 9 mirror covers every required §23.10 branch, all **441** win-pair co
 | `Include/Emtt/Emtt_TradePlan.mqh` | `e52a6005ff2ef2a7e75cef3c847c7ee80504bbf73fd6aa7028b03103fe2ba415` | 2573 |
 | `Include/Emtt/Emtt_VolumeFlow.mqh` | `5f311e6fa62bc67f4235e9316cf9a4f295354487f3f77d3b54d16d571f0e2eb3` | 8648 |
 
-**Remaining acceptance boundary.** Compile `Experts/Emtt.mq5` in MetaEditor, then confirm the live M15 demo checklist (a)–(h), the open-position freeze/restart behavior, file failures/recovery, unchanged panel/removal, and H1's incompatible-chart behavior in the checklist above. No live-terminal approval is recorded by this delivery stamp. Phase 9 remains awaiting that native/author acceptance before its overall “Done When” status can be closed.
+**Remaining acceptance boundary.** Native MetaEditor compilation and the live M15 demo checklist (a)–(h) — including open-position freeze/restart, file failure/recovery, unchanged panel on removal, and H1 incompatible-chart behaviour — are recorded as **author-confirmed on a real MT5 chart (2026-10-12)**. No acceptance item stays open. **PHASE 9 IS CLOSED.**
+
+---
+
+## 25. Phase 10 — Tick-Level CVD Divergence Detection (early reversal warning for the trailing stop)
+
+**Status: SPEC WRITTEN (2026-10-12) — AUTHOR'S DECISIONS RECORDED; BUILD AUTHORISED TO START IN A NEW CHAT FROM THIS SECTION.** The author decided on 2026-10-12: (1) it is **one phase**, delivered whole, not split; (2) **no new input** — divergence detection is always on while a trade is live and silently disables itself on sparse data, fully automatic; (3) divergence **tightens the trailing stop only** — it never closes a trade directly, never changes the signal, never moves Entry/Stop/Target/TP1/TP2, and never overrides the hard rule that the stop only moves in the trade's favour; (4) it plugs into the existing trailing pipeline as the long-missing Layer 3 multiplier Gaeni §5.1 defined ("divergence 0.5×" — see Phase 8 note at 21.7 that marked it "not built — Emtt has no tick-level CVD"). This phase adds that multiplier.
+
+Divergence, in plain words: **price is still moving in the trade's favour, but the real buying/selling pressure behind the move is fading.** Every candle makes a new high (for a BUY trade) yet the aggressive buying on each tick is shrinking compared to the last push up. That is the warning sign before a reversal. Emtt already sees this at candle close; this phase lets it see it on the tick, 1–3 candles earlier, so the trailing stop can lock in profit before the fade becomes a pullback.
+
+**What Phase 10 is not.** It is not a tick-level trading signal. It does not generate BUY/SELL, does not change Entry/Stop/Target, does not cancel a pending order, does not move TP1 or TP2, does not close a trade outright, does not retrain any model, does not draw lines on the chart, does not add a panel row, and does not add a file or input. It is a **trailing-stop amplifier** — one more context multiplier in the existing 21.7 stack.
+
+### 25.1 Files
+
+| File | Change |
+|---|---|
+| `Include/Emtt/Emtt_TickDivergence.mqh` | new — tick classification, rolling tick-CVD ring buffer, recent-swing detection on price and tick-CVD, divergence state (`none` / `weak` / `strong`), tick-density gate; pure logic, no order call, no chart, no file |
+| `Include/Emtt/Emtt_Trade.mqh` | the one edit of 25.9 below — divergence multiplier becomes a real value passed into the trailing-distance formula instead of the hardcoded `1.0` placeholder. Nothing else in the module changes |
+| `Include/Emtt/Emtt_TradeManager.mqh` | small change — per-tick path feeds the latest tick into the divergence state after the floating P/L refresh; closed-candle path reads the divergence state when it recomputes trailing distance; adopts/resets state on adopt / position open / position close |
+| `Experts/Emtt.mq5` | per-tick divergence feed in `OnTick()` after the existing `UpdatePanel()`; reset on adopt / position close; `#property version` becomes `1.80`; the description gains `Phase 10: tick-level CVD divergence detection for the trailing stop.` |
+| `tests/phase10_reference.py` + `tests/test_phase10_reference.py` | new — MT5-free mirror of 25.3–25.8, same pattern as Phases 2–9; scope in 25.11 |
+| `tools/mql5_compile_smoke.py` | contract gains the new header, the Phase 10 markers and the guards of 25.11 |
+| `README.md` | one Phase 10 paragraph |
+
+`Emtt_Dashboard.mqh`, `Emtt_DynamicParams.mqh`, `Emtt_Regime.mqh`, `Emtt_Supertrend.mqh`, `Emtt_SMC.mqh`, `Emtt_VolumeFlow.mqh`, `Emtt_MTF.mqh`, `Emtt_TradePlan.mqh`, `Emtt_Signal.mqh`, `Emtt_Summary.mqh`, `Emtt_LearnFile.mqh`, `Emtt_Learning.mqh`, `Emtt_ParamFile.mqh` and `Emtt_ParamOpt.mqh` are **not touched** and stay byte-identical. Sections 1–24 are not rewritten; only status stamps are appended. No new chart-timeframe handle, no new file, no new GlobalVariable is added.
+
+**25.1a The one edit to `Emtt_Trade.mqh`.** The trailing context multipliers of 21.7 Layer 3 already include a comment "gaeni's divergence multiplier is not built — Emtt has no tick-level CVD" with the multiplier hardcoded to `1.0`. The edit replaces that constant with a `divergenceMult` argument passed in by the trade manager (1.0 when detection is inactive, 0.8 for weak divergence, 0.5 for strong, per 25.7); every other factor of the distance — base by timeframe, method distance, confidence multiplier, regime multiplier, news multiplier, the never-backwards rule, the Protect word — stays exactly as Phase 8 built them. Divergence multiplies the final distance in the same stack, nothing more. When detection is unavailable the multiplier is `1.0` and Phase 8 behaviour is byte-identical.
+
+### 25.2 Rules for this phase
+
+1. **Trailing only.** Divergence acts only on the trailing stop, and only once trailing is active (i.e. from the breakeven moment onward, exactly as 21.7 defines). Before breakeven the multiplier is `1.0` even when divergence is visible — tightening a stop before breakeven on an early warning would kick the trade out of healthy noise, and in the default no-stop configuration there is no stop to tighten yet.
+2. **Never closes a trade.** Divergence never calls `PositionClose`, never moves TP, never changes Entry/Stop/Target. The most it does is move the trailing stop closer by multiplying the trailing distance, inside the existing never-backwards guard. The stop still only moves in the trade's favour.
+3. **Ticks only, no forming candle.** Per-tick work is one O(1) update: classify the tick, push into the ring buffer, update running sums, and re-check divergence. It must never read index 0 bars, never recompute indicators, and never call CopyRates or CopyBuffer on a tick. The only per-tick data is `SymbolInfoTick()` and the existing `PositionGetDouble(POSITION_PROFIT)` that already runs.
+4. **Automatic quality gate.** If tick data is too sparse, the detector silently switches itself to `inactive` (multiplier `1.0`) and journals it once per session. It turns itself back on automatically when tick density recovers. A normal user on forex majors or gold will never see it off; an exotic or crypto pair with poor feeds will simply behave exactly as Phase 8 did.
+5. **Bounded memory.** The tick ring buffer is fixed-size, allocated once at init, never grown. No unbounded history, no disk write, no backfill beyond the trade's own lifetime.
+6. **Graduated, not binary.** Two levels — `weak` (multiplier `0.8`) and `strong` (multiplier `0.5`) — with a `none` state at `1.0`. A divergence is declared `weak` before it becomes `strong`; once strong it cannot drop back to weak on the same leg (hysteresis) until the next fresh price swing, to stop the trail flicker-then-release that false warnings would otherwise cause.
+7. **Direction-aware.** For a BUY trade only bearish divergence (price up, CVD pressure fading up) is relevant. For a SELL trade only bullish divergence (price down, CVD pressure fading down) matters. Opposite-side divergence is ignored — e.g. buying-pressure strength while already in a BUY trade is confirming, not a warning.
+8. **Nothing is drawn, nothing is shown in the panel except a STATUS line.** No new panel row, no new colour, no font or width change (rule 11). The panel layout is unchanged.
+9. **Determinism where possible.** The same tick stream in the same order gives the same divergence state. Ticks are processed in arrival order as `SymbolInfoTick` delivers them.
+10. **ASCII source.** The new header contains only ASCII characters, exactly as 17.2 rule 9 requires.
+11. **Reset on position close.** All ring buffers, peaks and divergence state reset when no Emtt position is open. Detection starts fresh on the next trade.
+12. **Nothing else changes.** No signal change, no Entry/Stop/Target change, no TP1/TP2 change, no plan lifecycle change, no management row change outside the single multiplier edit of 25.1a, no learning record change, no parameter-optimization change.
+
+### 25.3 Tick classification — which side is aggressive
+
+A tick has a price and a time. MT5 delivers ticks through `SymbolInfoTick` (last Bid / last Ask / time); `CopyTicks` with `COPY_TICKS_ALL` gives the recent tick stream with bid/ask volumes and tick flags. Emtt reads ticks from `CopyTicks` into a fixed ring buffer (25.5) for the recent window, and updates the live state on each `OnTick` with the latest `SymbolInfoTick`.
+
+Each arriving tick is classified with a single signed value `+1` / `−1` / `0`:
+
+- **Bullish tick (+1):** the tick's Ask moved up from the previous Ask **or** the tick's Bid moved up from the previous Bid while the Ask stayed at or above the prior Ask (an uptick in price — aggressive buying).
+- **Bearish tick (−1):** the tick's Bid moved down **or** the Ask moved down while the Bid stayed at or below the prior Bid (a downtick — aggressive selling).
+- **No direction (0):** zero-change tick, or a tick where Bid and Ask moved in opposite directions (a spread change — not directional).
+
+This is the canonical "tick sign" used in every tick-CVD implementation. It is broker-agnostic and needs no `tick_volume` field (ticks themselves are the volume here).
+
+### 25.4 Tick-CVD — rolling cumulative delta
+
+- **Tick-CVD** is a running sum of signed ticks over the divergence window. Starting at zero when a position opens, each new tick adds its sign (+1 / −1 / 0). A rising tick-CVD means aggressive buying is dominating; a falling tick-CVD means aggressive selling is dominating.
+- **The divergence window** is two-fold and bounded:
+  - (a) the most recent **`EMTT_DIV_TICKS 300`** ticks — a fixed ring buffer, always the newest 300, sufficient to cover several push/leg cycles on any of the allowed timeframes (on M15 this is roughly 5–15 minutes of action, which is the scale at which reversals actually begin);
+  - (b) hard time-capped at **`EMTT_DIV_MAX_WINDOW_MIN 15` minutes** — older ticks outside 15 minutes are dropped from the running sum even if the buffer is not full, so a quiet post-news lull never holds an ancient peak.
+- **Two running sums** are maintained for O(1) updates:
+  - `cvdNow`: the rolling tick-CVD sum over the window;
+  - `cvdAbs`: rolling sum of absolute tick signs (a tick-activity count used by the density gate of 25.6).
+- On each new tick the oldest tick leaving the ring buffer subtracts its sign from `cvdNow` and `cvdAbs`; the new tick adds its sign. No full re-scan; the update is constant-time.
+- When no position is open the buffer is empty (`cvdNow = 0`, `cvdAbs = 0`).
+
+### 25.5 Swing detection on the tick stream
+
+Divergence is a comparison of two **swing peaks** — one in price and one in tick-CVD. To avoid noise, the swing rules mirror the closed-bar swing logic of 13.3, applied to the tick ring buffer:
+
+- **Tick swing** = a local extreme whose value is strictly greater (or less) than each of `EMTT_DIV_SWING_STRENGTH 5` neighbouring ticks on both sides. Strength 5 filters out single-tick micro-spikes while still catching a real leg — roughly 5–30 seconds of action on a major pair.
+- **Price high-water mark** within the window: highest mid-price `(Bid + Ask) / 2` among ticks in the window. **Price low-water mark**: the mirror.
+- **CVD high-water mark** within the window: highest `cvdNow` value sampled per tick in the window. **CVD low-water mark**: the mirror.
+- **Leg tracking.** For a BUY trade Emtt tracks the most recent two price swing highs inside the window, labelled `pricePeak1` (the newest high) and `pricePeak0` (the prior high). For each it records the matching CVD value at the moment of that price peak (`cvdAtPricePeak1`, `cvdAtPricePeak0`). For a SELL trade it tracks the two most recent price swing lows the same way.
+- A swing high (price pushing to a new leg up) is **confirmed** `EMTT_DIV_SWING_STRENGTH` ticks after it forms — same confirmation discipline as closed-bar swings, so one tick never prints a fake peak.
+
+### 25.6 Data-quality self-monitoring (the sparse-tick gate)
+
+Before evaluating divergence each tick, Emtt checks whether tick data is dense enough to trust:
+
+- **Tick density** = ticks in the last `EMTT_DIV_DENSITY_MIN 60` seconds, read from the ring buffer timestamps.
+- **Active threshold:** `EMTT_DIV_DENSITY_MIN_TICKS 10` ticks in the last 60 seconds. On a liquid pair this is trivial (majors often run 100–500 ticks/minute); on a sparse exotic this fails quickly.
+- **Hysteresis:** once declared `inactive` due to sparsity, detection stays inactive until density reaches `EMTT_DIV_DENSITY_RECOVER 20` ticks in 60 seconds (double the threshold), so the state does not flicker on/off at the edge.
+- **Initial cooldown:** for the first `EMTT_DIV_WARMUP_TICKS 50` ticks after a position opens, detection is inactive — the buffer is still filling and a half-full window gives false readings.
+- **When inactive** the multiplier is `1.0`, the divergence state is `none`, and Emtt behaves exactly as Phase 8. Recovery is automatic.
+- A state flip from active → inactive or inactive → active is journaled once per session at most; individual tick counts are not journaled.
+
+This is the automatic answer to the concern "it doesn't work well on sparse instruments": Emtt turns it off by itself, no input needed, and the user never has to know.
+
+### 25.7 Divergence detection — exact definition
+
+Only evaluated when all of these hold:
+- an Emtt position is open;
+- trailing has started (post-breakeven — 25.2 rule 1);
+- the density gate says `active`;
+- the initial cooldown has passed;
+- the ring buffer contains at least two confirmed tick-swings in the trade direction.
+
+For a BUY trade (detecting bearish divergence — momentum fading up):
+
+- **Weak divergence** if the newest price swing high `pricePeak1` is **strictly above** the prior swing high `pricePeak0` (price still making new highs) **and** the matching CVD at that new peak `cvdAtPricePeak1` is **strictly below** `cvdAtPricePeak0` (buying pressure at the new high is weaker than at the prior high) **and** the new price high is at least `EMTT_DIV_PRICE_LEAST 0.10 × ATR` above the prior peak (so micro-noise does not trigger).
+- **Strong divergence** if weak divergence holds **and** `cvdAtPricePeak1 ≤ cvdAtPricePeak0 × EMTT_DIV_STRONG_RATIO 0.5` (buying pressure at the new high is **half or less** of what it was at the prior high — a clear exhaust, not a small fade).
+- **Confirmed:** held for `EMTT_DIV_CONFIRM_TICKS 3` consecutive ticks (so one stray tick at a new extreme does not set it; this is the tick-scale equivalent of Phase 2's two-candle confirmation).
+
+For a SELL trade the rules are mirrored on swing lows (new low in price with a CVD low that is shallower than the prior CVD low = bullish divergence; pressure to sell is fading).
+
+- **Reset to `none`:** when price makes a new swing **in the opposite direction** of the trade (a pullback leg) and then resumes — the comparison restarts with two fresh legs, so a divergence that resolved into a healthy pullback does not stay latched. The reset also fires if trailing moves the stop (a stop move means price has pulled back enough to be tracked; the next leg gets fresh eyes).
+- **Hysteresis:** once declared `strong` the state stays `strong` until one of the reset conditions; it never returns to `weak` on the same leg, so the tighter trail never loosens mid-leg. It returns to `none` (multiplier 1.0) only on reset, never mid-leg.
+- `ATR` used for the `0.10 × ATR` noise filter is the trade's frozen entry ATR value (9.2.3 freeze rule) — never recomputed from live data during a trade, so the threshold is fixed the moment the trade opens.
+
+### 25.8 The multiplier and its effect on the trailing stop
+
+The divergence state maps directly to a distance multiplier used in the existing 21.7 trailing-distance calculation:
+
+| State | Multiplier | Effect |
+|---|---|---|
+| `inactive` (sparse / warmup / no position) | `1.0` | exactly Phase 8 behaviour |
+| `none` (no divergence) | `1.0` | exactly Phase 8 behaviour |
+| `weak` | `0.8` | trail tightens by 20% |
+| `strong` | `0.5` | emergency-tight trail (the Gaeni 5.1 Layer 3 value) |
+
+The multiplier multiplies the final trailing distance **after** the confidence / regime / news multipliers of 21.7 Layer 3, in exactly the slot the Phase 8 comment reserved for it. The never-backwards guard of 21.7 still applies: the stop is placed at that new tighter distance, but only if it is closer to the current price than the existing stop (i.e. it only ever locks in more profit, never gives profit back). If the multiplier would place the stop further away (which can only happen if state goes from `strong` back to `weak`/`none` in a single tick — prevented by the hysteresis rule), the existing tighter stop is kept.
+
+**What this achieves in practice (plain language):**
+- Healthy trend, momentum confirmed → trail at its normal distance, profits run.
+- Momentum starting to fade (weak divergence) → trail pulls in 20% so if the pullback does come, Emtt gives back less profit before getting stopped out.
+- Momentum clearly exhausted (strong divergence, fake-breakout pattern) → trail pulls in to half the normal distance, locking most of the open profit before the reversal prints on a closed candle.
+- Sparse / bad tick data → Emtt quietly ignores divergence entirely and trails exactly as Phase 8 did; the feature cannot hurt trades it cannot see clearly.
+
+### 25.9 The one edit in `Emtt_Trade.mqh` (wiring detail)
+
+The Layer 3 multipliers in the trailing-distance function currently end with a hardcoded `newsMult` and the comment noting divergence is missing. The final line of the multiplier stack becomes:
+
+```
+finalMult = confMult * regimeMult * newsMult * divergenceMult;
+```
+
+where `divergenceMult` is a new `const double` argument to the function, defaulting to `1.0` for every call site outside the live position path (so plan-building, expected-duration calculations and TP revision are unaffected — they are not trailing). All existing call sites pass `1.0` except the trade manager's live trailing step, which passes the value from 25.8. Every other line of the module is unchanged.
+
+### 25.10 Panel wiring and STATUS line
+
+The layout does not change: same rows, same width, same font, same palette, no new row (6 rule 11). The only visible trace of this phase is one new STATUS line shown **only while divergence is active and a position is open**, added to the existing trade-event precedence of 21.12:
+
+- Weak divergence (after a trailing update): `Trailing — momentum fading, tightening trail.`
+- Strong divergence (after a trailing update): `Trailing — momentum exhausted, tightening trail.`
+
+These replace the generic trailing line (`Trailing — stop at <price>, +N pts locked.`) for that update tick only, in the same way the existing breakeven / TP1-hit lines replace it on those events. On the next tick without a new stop move the panel returns to the normal trailing line. The Protect word, Row 12 floating P/L, Row 13 Live SL/TP1/TP2, and Row 14 Age/Duration are unchanged (Row 13 will naturally show the tighter stop after a divergence-driven move, since the stop itself moves).
+
+### 25.11 Journal and determinism
+
+Journal — the existing `PrintFormat` channel, shape `Emtt | <what> | <detail> | bar <time>` (or tick time, since divergence can fire between closed bars), on state changes only:
+
+- `Emtt | Tick divergence active | BUY | warmup 50 ticks complete | bar <time>`
+- `Emtt | Tick divergence inactive | sparse feed (7 ticks/min) | bar <time>`
+- `Emtt | Tick divergence recovered | 24 ticks/min | bar <time>`
+- `Emtt | Divergence weak | BUY | new high 1.09120, CVD fading (cvd 420 vs 610) | trail 0.8x | tick <time>`
+- `Emtt | Divergence strong | BUY | new high 1.09140, CVD exhausted (cvd 280 vs 610) | trail 0.5x | tick <time>`
+- `Emtt | Divergence reset | BUY | fresh leg after pullback | tick <time>`
+
+Never journaled: individual ticks, unchanged state across ticks, and the state while no position is open. The existing trailing-update journal line of 21.13 gains the divergence multiplier when it is not `1.0`:
+
+`Emtt | Trailing updated | Chandelier | stop 1.08650 (2.5 ATR x0.9 x0.5) | +32 pts locked | tick <time>`
+
+Determinism: given the same sequence of ticks (same bid/ask/time in the same order), the divergence state, the multiplier, and every journal line are identical. No randomness, no clock reads beyond the tick's own time, no file access, no global lookups.
+
+### 25.12 Parameter rows Phase 10 adds to the table of 9.2.3
+
+Every number in Phase 10 is a fixed standing constant, identical across asset class, timeframe, volatility bucket and regime — the same standing as the displacement multiple (13.10), the equal-level tolerance (13.7) and the spread gate (21.14):
+
+| Row | Value | Class | Layer 1 / 2 / 3 / 4 |
+|---|---|---|---|
+| p. Ring-buffer size | **300** ticks | Measurement | fixed, no layer adjusts |
+| q. Max window time | **15** minutes | Measurement | fixed |
+| r. Tick swing strength | **5** ticks each side | Measurement | fixed |
+| s. Density active threshold | **10** ticks / 60 s | Strictness | fixed |
+| t. Density recovery threshold | **20** ticks / 60 s | Strictness | fixed |
+| u. Warmup ticks after open | **50** | Strictness | fixed |
+| v. Minimum price-leg size | **0.10 × ATR** (entry ATR) | Strictness | fixed |
+| w. Weak/Strong CVD ratio threshold | **0.5** (≤ half) | Strictness | fixed |
+| x. Confirmation ticks | **3** | Strictness | fixed |
+| y. Weak divergence multiplier | **0.8** | Management | fixed |
+| z. Strong divergence multiplier | **0.5** | Management | fixed (Gaeni 5.1 Layer 3 "emergency tight" value) |
+
+- **Guard rail (9.2.3):** these constants are compiled into the module and never change at runtime; the freeze rule of 9.2.3 already freezes management parameters while a position lives, which covers the entry-ATR value used by row v.
+- **No new history gate.** Divergence needs no closed-bar history beyond what Phase 8 already requires; it needs only live ticks, which start flowing the moment the EA attaches.
+
+### 25.13 Tests, gates and guards
+
+`tests/phase10_reference.py` mirrors 25.3–25.11, and `tests/test_phase10_reference.py` asserts, without MT5:
+
+- tick classification: uptick → +1, downtick → −1, zero/spread tick → 0, mixed-move rules on bid/ask;
+- ring buffer O(1) push/pop, running sums correctness, 15-minute time expiry of old ticks, empty state when no position;
+- tick-swing detection with strength 5, plateaus resolved one tick, single-tick spikes filtered, confirmation 5 ticks after formation;
+- weak divergence: new price peak + lower CVD peak + 0.10 ATR leg size, confirmed after 3 ticks, multiplier 0.8;
+- strong divergence: weak + CVD ≤ 0.5× prior, multiplier 0.5;
+- side filtering: BUY trade ignores bullish divergence, SELL ignores bearish;
+- opposite-direction leg resets state; stop move resets state; hysteresis keeps strong from dropping to weak mid-leg;
+- density gate: below 10 ticks/60 s → inactive (mult 1.0), recovery at 20 ticks/60 s, no flicker at the edge;
+- 50-tick warmup after position open; multiplier 1.0 during warmup;
+- state always `none` / mult `1.0` before breakeven;
+- reset on position close, reset on adopt (when re-attaching to an already-open position the buffer starts fresh and warmup runs again);
+- the 25.9 edit: divergence multiplier multiplies final trail distance after conf/regime/news, defaults to 1.0 on every other call site, never moves stop backwards;
+- determinism: same tick sequence → same state, same multiplier, same journal lines.
+
+`tools/mql5_compile_smoke.py` gains the new header with the markers `EMTT_DIV_TICKS 300`, `EMTT_DIV_MAX_WINDOW_MIN 15`, `EMTT_DIV_SWING_STRENGTH 5`, `EMTT_DIV_DENSITY_MIN 60`, `EMTT_DIV_DENSITY_MIN_TICKS 10`, `EMTT_DIV_DENSITY_RECOVER 20`, `EMTT_DIV_WARMUP_TICKS 50`, `EMTT_DIV_PRICE_LEAST_ATR 0.10`, `EMTT_DIV_STRONG_RATIO 0.5`, `EMTT_DIV_CONFIRM_TICKS 3`, `EMTT_DIV_WEAK_MULT 0.8`, `EMTT_DIV_STRONG_MULT 0.5`, the include order `Emtt_ParamFile.mqh` → `Emtt_ParamOpt.mqh` → **`Emtt_TickDivergence.mqh`** → `Emtt_Trade.mqh` → `Emtt_TradeManager.mqh` (pure divergence state lives alongside ParamOpt, before both trade headers so the manager can see the state struct), and exactly one `SEmttTickDivergenceState g_tickDiv;` in the EA. It also asserts the one-line edit to `Emtt_Trade.mqh` — the `divergenceMult` argument on the trailing-distance function with a default of `1.0` — and carries the Phase 1 dashboard digest and every Phase 2–9 marker, unchanged.
+
+Guards:
+- the **chart-drawing guard** of 15.2 rule 1, applied to the new header and the EA;
+- the **trade-scope guard** of 21.15 — order tokens remain legal only in `Emtt_TradeManager.mqh` and the EA, and the new header is pure logic with no order call, no PositionClose / PositionModify of its own;
+- the **ASCII guard** of 17.9 on the new header;
+- the **file guard** of 23.10 unchanged: only `.learn`, `.summary` and `.params` inside `Emtt_Learning\\`; this phase adds no file, no GlobalVariable, no new indicator handle and no CopyRates/CopyBuffer call (it uses `CopyTicks` only inside the manager).
+
+### 25.14 Not in this phase
+
+No tick-level trading signal; no tick-level CVD used for confidence, entry, SL, TP or TP1/TP2 revision; no divergence-based direct close; no tick-divergence display on the panel beyond the STATUS line; no new input; no new panel row; no chart drawing; no new file; no learning-record change (divergence events are not features and do not train Phase 7 or Phase 9); no alert, sound, push or email; no change to signal, plan lifecycle, breakeven trigger, TP1 partial percentage, time exit, news multipliers or session display; no change to any approved module outside the single multiplier argument of 25.1a and the manager's per-tick feed.
+
+---
+
+## 26. Phase 10 — Done When
+
+**Status: SPEC WRITTEN (2026-10-12) — NOT YET BUILT.** Every bullet below must hold before the phase is called implemented. The portable bullets are proven by `python -m unittest discover -s tests -v`, `python tools/mql5_compile_smoke.py` and `python tools/mql5_parser_check.py`; the live-terminal bullets are the author's to confirm on a real MT5 chart, exactly as sections 10, 12, 14, 16, 18, 20, 22 and 24 were, and status stamps in this section are appended only when they pass.
+
+- The sixteen approved modules outside 25.1 are byte-identical; `Emtt_Trade.mqh` carries only the 25.1a edit — the `divergenceMult` argument and its one multiplication in the final distance — and `Emtt_TradeManager.mqh` changes only as 25.1 says (per-tick feed, adoption and reset); inputs are unchanged (six inputs total, no new one); no new chart-timeframe handle, no new file and no new GlobalVariable exists.
+- `Emtt_TickDivergence.mqh` is in the required-source set with every Phase 10 marker of 25.13, and the four guards hold — file guard unchanged at `.learn` / `.summary` / `.params`, no order call in the new header.
+- Per-tick work is O(1): one push/pop into a fixed 300-slot ring buffer, two running sums updated, swing detection done incrementally; no CopyRates, no iCopy, no indicator call on a tick.
+- Ring buffer memory is fixed at init, allocated once; growth never occurs; all state is reset when no position is open.
+- Tick classification, running sums, swing peaks, divergence levels, multipliers, density gate, warmup, confirmation, reset and hysteresis all match 25.3–25.8 exactly.
+- Divergence never fires before breakeven, never on a sparse feed, never with fewer than 50 warmup ticks or fewer than two confirmed tick-swings, never on the wrong side of the trade, and never moves the stop backwards.
+- The multiplier is 1.0 whenever detection is inactive or shows no divergence, so Phase 8 behaviour is byte-identical in those states; the one-line default in 25.9 makes every non-trailing call site behave exactly as Phase 8.
+- A fake-breakout scenario (price makes a new high on tick spikes while CVD collapses) produces a `strong` state within ~5 ticks after the new peak and tightens the trail to 0.5×.
+- On a forex major or gold with normal tick flow, density stays active and divergence fires only on real momentum fades (no false triggers from healthy pullbacks of less than 0.10 ATR).
+- On a sparse exotic/crypto feed the detector self-disables within 60 seconds and behaves exactly as Phase 8, recovering automatically when density returns.
+- Every state change (warmup complete, inactive, recovered, weak, strong, reset) is in the journal with its numbers and the multiplier; per-tick silence is preserved and individual silent ticks are not journaled. The trailing-update journal line carries the multiplier when non-1.0.
+- STATUS shows the two new lines only after a divergence-driven trailing update; the panel layout, palette, font, width and all other rows are unchanged. Row 13 naturally reflects the tighter stop after the move.
+- **The EA still draws nothing but the panel**, and all panel objects are still removed cleanly when the EA is removed from the chart.
+- `python -m unittest discover -s tests -v` and `python tools/mql5_compile_smoke.py` pass, with the new header and markers in the CI contract and every Phase 2–9 marker still asserted.
+- `python tools/mql5_parser_check.py` exits 0 on the Phase 10 sources, with the built-in negative control rejected first (Hard Rule 3), and the sha256 and node counts recorded here at delivery.
+- On a live M15 demo chart, the author confirms: (a) with a trade open and breakeven hit, a healthy strong trend keeps the normal trailing distance (Protect word unchanged, multiplier 1.0 visible in the journal on a trailing update); (b) a fake breakout / spike-and-fade pattern triggers `strong` divergence on the tick stream within seconds, tightens the trail to 0.5×, the STATUS line shows the strong-divergence message, and Row 13 Live SL reflects the tighter stop; (c) before breakeven the multiplier stays 1.0 even when momentum fades; (d) on a known sparse instrument (e.g. an exotic pair with few ticks/minute) the detector journals `inactive` within 60 seconds and trails exactly as Phase 8; (e) removing and re-attaching the EA mid-trade adopts the position, resets the tick buffer, runs warmup again, and resumes trailing normally; (f) with no position open (Panel B state) nothing changes per-tick and the per-tick cost is the same `UpdatePanel()` call as Phase 8; (g) the panel layout, header, colours, font and width are unchanged.
+- On H1 and other charts rule 19 still holds: no position can be opened there, so divergence never runs; the Price Row stays live.
+
+---
+
+## 27. Phase 11 Planning Note — Graded Confidence Tiers & Continuous Signal Display
+
+**Status: DESIGN DIRECTION DISCUSSED AND AGREED WITH THE AUTHOR (2026-10-12). Not a spec yet — this records the author's design decision so the Phase 11 spec can be written in a new chat. It is NOT implemented. Nothing in this section overrides Phases 1–10 or changes any approved module yet.**
+
+**Author's diagnosis.** Phase 6's "below-bar = WAIT, show no direction" behaviour hid Emtt's real read on strong trend days (e.g. BTCUSD M5 holding ~55% BUY through a full 65-point up-move, showing nothing all day). Emtt must **always tell the user which way it leans** when it has any lean, graded by confidence, rather than going silent until it hits a hard bar. The auto-trade threshold is separate from the display threshold — that separation is how transparency and safety coexist.
+
+**Three agreed design points (simple):**
+
+1. **Five confidence tiers on the panel — always show direction when Emtt has a lean, and always show the number when it exists.**
+   - When there is no number (loading history, market closed, incompatible chart): `Confidence: --%` and the SIGNAL row shows ■ WAIT.
+   - When confidence exists but is **below 35%**: SIGNAL shows ■ WAIT (grey), and Row 3 still shows the real number and tier, e.g. `Confidence: 28% — Very low`. The user sees exactly how unsure Emtt is, rather than being lied to with `--%`.
+   - **35–45%** → ▲ BUY / ▼ SELL in soft grey-green/red, `Confidence: NN% — Low confidence`.
+   - **46–55%** → ▲ BUY / ▼ SELL at normal signal colour size, `Confidence: NN% — Normal`.
+   - **56–70%** → ▲ BUY / ▼ SELL at full signal colour, `Confidence: NN% — Confident`.
+   - **71%+** → ▲ BUY / ▼ SELL at full signal colour + bold, `Confidence: NN% — High confidence`.
+   Rows 4–8 (Entry/SL/Target/RR/Duration) are filled in with real values for every tier that shows BUY/SELL (35%+) using the same 17.4 logic. For the <35% WAIT state those rows show `--`, exactly as WAIT does today.
+
+2. **One new input under the Auto Trading group, directly below Auto Trading ON/OFF: a numeric field labelled "Auto-trade above (%)".**
+   - Accepts whole numbers **35 to 100** inclusive. Default **56** (matches the "Confident and above" tier, close enough to today's safety that Phase 8 users feel no change).
+   - Meaning: Emtt sends an order whenever the displayed confidence reaches or exceeds this number (and all existing safety gates pass: spread, margin, valid SL/Target/RR, no existing trade, terminal allowed, market open).
+   - Tiers below this number still show BUY/SELL on the panel with the confidence label — the user always sees the direction — but no order is sent. This is the clean split between "show me what you see" and "trade only when this sure."
+   - Example: user types `50` → Emtt auto-trades any signal at 50%+; 40% BUY still shows on the panel but no order fires.
+
+3. **Market order vs pending order rules stay exactly as 21.6 — but they apply to every tier that clears the user's auto-trade threshold.**
+   - If the entry price is the current Ask/Bid (i.e. no valid order-block edge within reach), send a **market order** the moment the tier is reached at a closed candle.
+   - If Emtt has identified a valid order-block edge within 2.0 ATR (the existing 17.4 / 17.5 row d rule), send a **pending limit order** at that edge — Emtt waits for price to come to it.
+   - Existing safety gates (spread, margin, one-trade-at-a-time, Auto Trading ON, terminal/account allowed, market open) still apply to every order unchanged from Phase 8.
+   - Lot sizing already scales with confidence (21.5 row b): low confidence 0.7×, normal 1.0×, confident 1.2×, high 1.5× — the tiers map directly onto those bands with no new math needed.
+
+**Phase 9 is unaffected.** It continues to learn and adjust the confidence number itself (±15% over the four-view score). It learns from the real outcomes at every tier where an order was sent (same evidence rule as today). No change to the `.params` file or the near-miss logic — though near-misses now become "setups Emtt displayed but did not trade because they were below the user's threshold," which is the same thing by another name.
+
+**What changes in the panel (summary):** no new row; palette gains two intermediate signal shades so low confidence is visually softer than high confidence without being grey; the Confidence row always shows a real percentage **whenever Emtt has computed one** (including below-35% WAIT states), formatted exactly as one line `Confidence: NN% — Very low` / `— Low confidence` / `— Normal` / `— Confident` / `— High confidence`. `Confidence: --%` is reserved for three states only: loading history, market closed, and incompatible chart — never for an honest but low WAIT reading. WAIT's ■ stays grey for the SIGNAL row below 35% and for the three no-number states; Row 10 STATUS keeps all existing reasons and gains tier-appropriate wording (e.g. *"Watching — confidence 28% (Very low), no trade."* while below 35%, or *"Signal active — Low confidence BUY, watching (auto-trade threshold 56%)."* when the tier is displayed but below the user's auto-trade threshold). Everything else — Header, Price Row, Regime, Entry/SL/TP, RR, Session, WHY, Summary, and the LIVE TRADE block — stays exactly as Phases 8/9 built it.
+
+**What the Phase 11 spec must cover when written:** the exact colour hex values for the two intermediate tiers, the lot-size multiplier mapping (0.7× / 1.0× / 1.2× / 1.5× onto the four non-WAIT tiers), the numeric Auto-trade-above input (35–100, default 56), the interaction with the existing mood bar and Phase 9 learned bar (both retire as the display/trade gate but remain available internally), the STATUS-line wording for each tier (including the below-threshold "watching" line and the <35% WAIT line showing the real percentage), test coverage for the display / gate split, and guards ensuring WAIT below 35% still empties Rows 4–8 while all non-WAIT tiers fill them with 17.4 levels. No indicator, parameter or management change beyond the threshold input and the tier display.
