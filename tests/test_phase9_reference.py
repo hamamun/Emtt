@@ -1143,7 +1143,8 @@ class TicketParameterPartTests(unittest.TestCase):
 class MqlContractTests(unittest.TestCase):
     def test_actual_include_graph_and_all_phase_two_through_nine_guards_pass(self):
         paths = smoke.resolve_include_graph(smoke.ENTRY)
-        self.assertEqual(len(paths), 17)
+        # Phase 10+ add headers; the Phase 2-9 set is still required.
+        self.assertGreaterEqual(len(paths), 17)
         smoke.check_contract(paths)
         for path in paths:
             smoke.check_delimiters(path)

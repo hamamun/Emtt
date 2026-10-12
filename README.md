@@ -126,6 +126,20 @@ while plans that were only watched retain Phase 7's paper target/stop label.
 
 `Emtt_ParamOpt.mqh` and `Emtt_ParamFile.mqh` learn only the confidence bar, independently for the four moods and each symbol/timeframe, choosing one step within **60 / 70 / 75** after at least 20 accepted and 20 private near-miss results. The new **Parameter optimization** input defaults to ON directly below Magic number, above Auto Trading. Learned bars and tallies live in a six-line `.params` sibling beside `.learn`; it loads before replay and rewrites atomically at init, a move/held move, and deinit (§23.7). Tally-only changes remain in memory until the next write event. Changes apply on the next live closed candle, with the entry bar frozen while a position lives. Replay never collects evidence, near-misses never become signals/training rows/orders, and optional ticket `par` metadata is author-only. OFF preserves the Phase 8 gates/serialization and never touches `.params`. All eleven protected headers remain byte-identical. Delivery has 522 passing tests and syntax checks over all 17 sources; native MetaEditor compilation and MT5 demo acceptance remain pending in `Emtt.md` §24.
 
+## Phase 10 — Tick-level CVD divergence for the trailing stop (code delivered)
+
+`Emtt_TickDivergence.mqh` is pure logic. While an Emtt position is open, `OnTick` first refreshes the panel and then passes the latest `SymbolInfoTick` to the trade manager. Each tick gets a sign (+1 / −1 / 0) from its Bid/Ask moves and goes into a fixed 300-slot ring (15-minute cap) that keeps running `cvdNow` / `cvdAbs` sums, so each tick costs O(1). Swing highs and lows of strength 5 are detected incrementally on the mid price.
+
+Divergence is evaluated only when all of these hold:
+
+- breakeven has been reached;
+- the 50-tick warmup is done;
+- the feed is dense enough (at least 10 ticks per 60 s; after it goes sparse it switches back on at 20).
+
+A new peak on the trade side that is at least 0.10 × the entry ATR beyond the previous one, with lower tick-CVD, is **weak** (0.8×). If the CVD is half or less, it is **strong** (0.5×). Either reading must hold for 3 ticks, and strong never drops back to weak. The reading resets when price pulls back with an opposite swing and then resumes, when the trailing stop moves, or when the leg leaves the window. Everything resets when the position closes or is adopted.
+
+The only edit to `Emtt_Trade.mqh` is the `divergenceMult=1.0` argument, which multiplies the final trailing distance after the confidence, regime and news factors. The stop still only ever moves in the trade's favour. STATUS shows `Trailing — momentum fading/exhausted, tightening trail.` only after a divergence-driven trailing move, and the trailing journal line shows the extra factor. There is no new input, row, file, handle or GlobalVariable. Native MetaEditor compilation and MT5 demo acceptance are still pending in `Emtt.md` §26.
+
 Run the portable checks with:
 
 ```sh

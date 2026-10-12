@@ -497,7 +497,8 @@ bool EmttTradeTrailCalculate(const int side,const double entry,
                              const bool highNews,const double highestHigh,
                              const double lowestLow,const bool hasSwing,
                              const double swingLow,const double swingHigh,
-                             SEmttTradeTrailResult &result)
+                             SEmttTradeTrailResult &result,
+                             const double divergenceMult=1.0)
   {
    result.valid=false;
    result.method=EMTT_TRAIL_METHOD_NONE;
@@ -549,7 +550,7 @@ bool EmttTradeTrailCalculate(const int side,const double entry,
       EmttTradeTrailConfidenceMultiplier(confidence);
    result.regimeMultiplier=EmttTradeTrailRegimeMultiplier(regime);
    result.distance=result.rawDistance*result.confidenceMultiplier*
-                   result.regimeMultiplier*result.newsMultiplier;
+                   result.regimeMultiplier*result.newsMultiplier*divergenceMult;
    if(!EmttTradeValidPositive(result.distance))
       return false;
    result.stop=(side>0 ? current-result.distance : current+result.distance);

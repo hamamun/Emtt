@@ -195,6 +195,7 @@ def check_contract(paths: list[Path]) -> None:
         "Include/Emtt/Emtt_Learning.mqh",
         "Include/Emtt/Emtt_ParamFile.mqh",
         "Include/Emtt/Emtt_ParamOpt.mqh",
+        "Include/Emtt/Emtt_TickDivergence.mqh",
         "Include/Emtt/Emtt_Trade.mqh",
         "Include/Emtt/Emtt_TradeManager.mqh",
     }
@@ -556,7 +557,7 @@ def check_contract(paths: list[Path]) -> None:
         (ea, r"EmttLearningResume\(", "19.6 plan resume after the replay"),
         (ea, r"EmttLearnJournalResumed\(", "Learning resumed journal line"),
         (ea, r"EmttLearnFileSave\(g_learning\.file,", "the four write events save the record"),
-        (ea, r'#property version\s+"1\.(?:60|70)"', "Phase 7 version stamp"),
+        (ea, r'#property version\s+"1\.(?:60|70|80|90)"', "Phase 7 version stamp"),
         (ea, r'#property description "Phase 7: self-learning signal filter\."',
          "Phase 7 description line"),
     )
@@ -697,7 +698,7 @@ def check_contract(paths: list[Path]) -> None:
         (phase7_learn_file,
          r"trade filled|trade closed|tradeNetPoints", "trade ticket grammar"),
         (phase7_learning, r"ticket\.tradeNetPoints", "real-net learning label"),
-        (ea, r'#property version\s+"1\.(?:60|70)"', "Phase 8 version stamp"),
+        (ea, r'#property version\s+"1\.(?:60|70|80|90)"', "Phase 8 version stamp"),
         (ea, r'#property description "Phase 8: live trading - order, management, record\."',
          "Phase 8 description line"),
     )
@@ -802,7 +803,7 @@ def check_contract(paths: list[Path]) -> None:
         (phase7_learn_file, r'"par atr "', "author-only parameter ticket part"),
         (phase7_learn_file, r'EmttLearnPartTail\(parts\[i\],"par",tail\)', "reader skips optional part"),
         (ea, r"ticket\.parBar=g_signal\.moodBar", "record the actual bar at plan start"),
-        (ea, r'#property version\s+"1\.70"', "Phase 9 version stamp"),
+        (ea, r'#property version\s+"1\.(?:70|80|90)"', "Phase 9 version stamp"),
         (ea, r'#property description "Phase 9: parameter-optimization persistence\."',
          "Phase 9 description line"),
     )
@@ -832,8 +833,10 @@ def check_contract(paths: list[Path]) -> None:
         "Emtt_MTF.mqh": "e12d61226ce59eb29a0a2ed8855e7eb7feeb59a3407f21cfcf9a6528a7665a88",
         "Emtt_TradePlan.mqh": "e52a6005ff2ef2a7e75cef3c847c7ee80504bbf73fd6aa7028b03103fe2ba415",
         "Emtt_Summary.mqh": "ade2b7e66f647c7595ef03d9bbf6640fdd19b2317f357678a474d6a1537e98f1",
-        "Emtt_Trade.mqh": "00eee02dc193fd4674483ab8b78d2b2bad9e0c2fdda83706f969f6451dbc2eb4",
-        "Emtt_TradeManager.mqh": "8cb5dd5e3466440b8ecc8f3913df99dc6ad783678561676b89caaa43d5b1b974",
+        # Emtt_Trade.mqh (00eee02d...) and Emtt_TradeManager.mqh (8cb5dd5e...)
+        # were frozen through Phase 9. Phase 10 (25.1 / 25.1a) supersedes
+        # both hashes: the trade header must reverse to 00eee02d... below,
+        # and the manager carries the Phase 10 feed markers.
     }
     for name, expected in frozen_phase8.items():
         raw = (ROOT / "Include" / "Emtt" / name).read_bytes()
@@ -932,6 +935,167 @@ def check_contract(paths: list[Path]) -> None:
         raise RuntimeError("Phase-9 GlobalVariable count must remain the Phase-2/6 baseline of 11")
     if re.search(r"\.par[A-Z]\w*", strip_comments_and_strings(phase7_learning + param_opt)):
         raise RuntimeError("Phase-9 ticket evidence is read by the model or decision rule")
+
+    check_phase10(paths, ea, trade, manager)
+
+
+def phase10_trade_reverse(trade: str) -> str:
+    """Undo the single 25.1a edit (argument + one multiplication)."""
+    text = trade.replace(
+        "                             SEmttTradeTrailResult &result,\n"
+        "                             const double divergenceMult=1.0)\n",
+        "                             SEmttTradeTrailResult &result)\n", 1)
+    return text.replace("result.newsMultiplier*divergenceMult;",
+                        "result.newsMultiplier;", 1)
+
+
+PHASE8_TRADE_SHA256 = "00eee02dc193fd4674483ab8b78d2b2bad9e0c2fdda83706f969f6451dbc2eb4"
+
+
+def function_body(source: str, signature: str) -> str:
+    """Text of one top-level MQL function, from its signature to the next."""
+    start = source.find(signature)
+    if start < 0:
+        return ""
+    following = re.search(r"\n(?:void|bool|int|long|double|string|datetime)\s+\w+\(",
+                          source[start + len(signature):])
+    end = start + len(signature) + following.start() if following else len(source)
+    return source[start:end]
+
+
+def check_phase10(paths: list[Path], ea: str, trade: str, manager: str) -> None:
+    """25.13: tick-level CVD divergence for the trailing stop."""
+    div_path = ROOT / "Include" / "Emtt" / "Emtt_TickDivergence.mqh"
+    div = div_path.read_text(encoding="utf-8")
+    phase10_markers = (
+        (div, r"EMTT_DIV_TICKS\s+300\b", "300-tick ring buffer"),
+        (div, r"EMTT_DIV_MAX_WINDOW_MIN\s+15\b", "15-minute window cap"),
+        (div, r"EMTT_DIV_SWING_STRENGTH\s+5\b", "tick swing strength 5"),
+        (div, r"EMTT_DIV_DENSITY_MIN\s+60\b", "60-second density window"),
+        (div, r"EMTT_DIV_DENSITY_MIN_TICKS\s+10\b", "10 ticks/60 s active threshold"),
+        (div, r"EMTT_DIV_DENSITY_RECOVER\s+20\b", "20 ticks/60 s recovery"),
+        (div, r"EMTT_DIV_WARMUP_TICKS\s+50\b", "50-tick warmup"),
+        (div, r"EMTT_DIV_PRICE_LEAST_ATR\s+0\.10\b", "0.10 entry-ATR minimum leg"),
+        (div, r"EMTT_DIV_STRONG_RATIO\s+0\.5\b", "strong CVD ratio 0.5"),
+        (div, r"EMTT_DIV_CONFIRM_TICKS\s+3\b", "3-tick confirmation"),
+        (div, r"EMTT_DIV_WEAK_MULT\s+0\.8\b", "weak multiplier 0.8"),
+        (div, r"EMTT_DIV_STRONG_MULT\s+0\.5\b", "strong multiplier 0.5"),
+        (div, r"struct SEmttTickDivergenceState", "pure divergence state"),
+        (div, r"long\s+msc\[EMTT_DIV_TICKS\];", "fixed ring allocated with the state"),
+        (div, r"int\s+cvdNow;", "rolling tick-CVD sum"),
+        (div, r"int\s+cvdAbs;", "rolling absolute-sign sum"),
+        (div, r"EmttTickDivSign\(", "25.3 tick sign"),
+        (div, r"EmttTickDivDetectSwing\(", "25.5 incremental tick swings"),
+        (div, r"EmttTickDivFeed\(", "25.3-25.7 per-tick update"),
+        (div, r"EmttTickDivMultiplier\(", "25.8 multiplier"),
+        (div, r"EmttTickDivOnStopMoved\(", "25.7 stop-move reset"),
+        (div, r"momentum fading, tightening trail\.", "weak STATUS line"),
+        (div, r"momentum exhausted, tightening trail\.", "strong STATUS line"),
+        (trade, r"SEmttTradeTrailResult &result,\s*const double divergenceMult=1\.0\)",
+         "25.9 divergenceMult argument with a 1.0 default"),
+        (trade, r"result\.newsMultiplier\*divergenceMult;",
+         "25.9 divergence multiplies the final distance after conf/regime/news"),
+        (manager, r'#include "Emtt_TickDivergence\.mqh"', "manager sees the divergence state"),
+        (manager, r"void EmttTradeManagerFeedTick\(", "per-tick divergence feed"),
+        (manager, r"EmttTickDivMultiplier\(div\)", "closed-candle trailing reads the multiplier"),
+        (manager, r"smc\.newestLowLevel,smc\.newestHighLevel,trail,divMult\)",
+         "live trailing passes the multiplier"),
+        (manager, r"EmttTickDivOnStopMoved\(div,", "stop move resets the reading"),
+        (manager, r'" x"\+DoubleToString\(divMult,1\)', "trailing journal carries a non-1.0 factor"),
+        (ea, r'#include "\.\./Include/Emtt/Emtt_TickDivergence\.mqh"', "quoted divergence include"),
+        (ea, r"SEmttTickDivergenceState g_tickDiv;", "one divergence state"),
+        (ea, r"EmttTickDivReset\(g_tickDiv\)", "empty buffer at init"),
+        (ea, r"g_learning\.file,g_tickDiv\)", "closed-candle step receives the state"),
+        (ea, r'#property version\s+"1\.(?:80|90)"', "Phase 10 version stamp"),
+        (ea, r'#property description "Phase 10: tick-level CVD divergence detection for the trailing stop\."',
+         "Phase 10 description line"),
+    )
+    for source, pattern, description in phase10_markers:
+        if not re.search(pattern, source):
+            raise RuntimeError(f"missing Phase-10 rule: {description}")
+    if len(re.findall(r"\bSEmttTickDivergenceState\s+g_tickDiv\s*;", ea)) != 1:
+        raise RuntimeError("Phase 10 must declare exactly one EA divergence state")
+    order = [ea.find(name) for name in (
+        "Emtt_ParamFile.mqh", "Emtt_ParamOpt.mqh", "Emtt_TickDivergence.mqh",
+        "Emtt_Trade.mqh", "Emtt_TradeManager.mqh")]
+    if min(order) < 0 or order != sorted(order):
+        raise RuntimeError("Phase-10 includes must be ParamFile, ParamOpt, TickDivergence, Trade, TradeManager")
+
+    # 25.1a: the trade header carries only the argument and the one
+    # multiplication; reversing them restores the Phase 8/9 delivery.
+    if hashlib.sha256(phase10_trade_reverse(trade).encode()).hexdigest() != PHASE8_TRADE_SHA256:
+        raise RuntimeError("Emtt_Trade.mqh changed beyond the 25.1a divergenceMult edit")
+    if len(re.findall(r"\bEmttTradeTrailCalculate\s*\(", manager)) != 1:
+        raise RuntimeError("Phase-10 trailing must have exactly one live call site")
+
+    # 25.1: the fourteen untouched headers stay byte-identical.
+    frozen_phase9 = {
+        "Emtt_DynamicParams.mqh": "24bd3519a4dccd6414474e6ff5854f9042a4237e96dd058ac4cccbde368ffdb8",
+        "Emtt_Regime.mqh": "d62dcf089a7baf51e7d40e68b8c960ecc1327735e7be630652f39edc8a97c01d",
+        "Emtt_Supertrend.mqh": "6b2d6a97abb7f4e683499da73d9012986da40f54dd013102daf83a6e5a115888",
+        "Emtt_SMC.mqh": "1691c923927429979c369be2c62e14b89afc834764f36f7fea33da6bc7146324",
+        "Emtt_VolumeFlow.mqh": "5f311e6fa62bc67f4235e9316cf9a4f295354487f3f77d3b54d16d571f0e2eb3",
+        "Emtt_MTF.mqh": "e12d61226ce59eb29a0a2ed8855e7eb7feeb59a3407f21cfcf9a6528a7665a88",
+        "Emtt_TradePlan.mqh": "e52a6005ff2ef2a7e75cef3c847c7ee80504bbf73fd6aa7028b03103fe2ba415",
+        "Emtt_Summary.mqh": "ade2b7e66f647c7595ef03d9bbf6640fdd19b2317f357678a474d6a1537e98f1",
+        "Emtt_LearnFile.mqh": "08ec0b308a3b1ba321e652ea657739eb884c7b41b42d72d6132fdd6e36ea2f5f",
+        "Emtt_Learning.mqh": "936289a3709cbb61ca961567f53c36b632efded9e0672fd9d9e3e4882373b773",
+        "Emtt_ParamFile.mqh": "051586fe54e02fdfe0114c9c29a7a9c073840377480cce2b561f910f6a1f153a",
+        "Emtt_ParamOpt.mqh": "854845beb8a5d26a4c153c740d6b6eb859bcc564c04f7247b8d6f03b31233f22",
+        "Emtt_Signal.mqh": "434b27bda44a7985a4126bec1cc0a133c721cc249d8c1e76d61f9d6b1e1582fe",
+        "Emtt_Dashboard.mqh": "22392551ed94bb3c38badea5b74e589c5d90f6ca75f41d8cb4ced541b4077b70",
+    }
+    for name, expected in frozen_phase9.items():
+        raw = (ROOT / "Include" / "Emtt" / name).read_bytes()
+        if hashlib.sha256(raw).hexdigest() != expected:
+            raise RuntimeError(f"Phase-10 scope violation: protected {name} changed")
+
+    # 25.2 / 25.13: no new input, handle, file or GlobalVariable.
+    inputs = re.findall(r"^input\s+(?!group\b)", ea, re.MULTILINE)
+    if len(inputs) != 6:
+        raise RuntimeError("Phase 10 adds no input: six inputs total")
+    if re.search(r"^input[^\n]*(?:[Dd]iverg|[Tt]ick)", ea, re.MULTILINE):
+        raise RuntimeError("Phase 10 must not add a divergence input")
+
+    # The per-tick path: OnTick refreshes the panel, then feeds the tick.
+    tick_body = function_body(ea, "void OnTick()")
+    if not re.search(r"UpdatePanel\(\);\s*EmttTradeManagerFeedTick\(g_trade,g_tickDiv\);", tick_body):
+        raise RuntimeError("Phase-10 feed must follow UpdatePanel() in OnTick")
+    per_tick_forbidden = (r"\bCopyRates\s*\(", r"\bCopyBuffer\s*\(", r"\bCopyTicks\w*\s*\(",
+                          r"\bi(?:ATR|AMA|Bands|Custom|MA|Time|Close|High|Low)\s*\(",
+                          r"\bOrderSend\b", r"\bPositionClose\w*\b", r"\bPositionModify\b")
+    feed_body = function_body(manager, "void EmttTradeManagerFeedTick(")
+    if "SymbolInfoTick(" not in feed_body or "EmttTickDivFeed(" not in feed_body:
+        raise RuntimeError("Phase-10 feed must read SymbolInfoTick and update the state")
+    for body, name in ((strip_comments_and_strings(tick_body), "OnTick"),
+                       (strip_comments_and_strings(feed_body), "manager feed")):
+        for pattern in per_tick_forbidden:
+            if re.search(pattern, body):
+                raise RuntimeError(f"Phase-10 per-tick path ({name}) contains {pattern}")
+
+    # Guards: drawing, trade scope, ASCII, file; the header is pure logic.
+    if not div_path.read_bytes().isascii():
+        raise RuntimeError("Phase-10 divergence header is not ASCII-only")
+    div_code = strip_comments_and_strings(div)
+    forbidden_div = (
+        r"\bObjectCreate\s*\(", r"\bOBJ_\w+", r"\bChart\w+\s*\(",
+        r"\bOrder\w*\s*\(", r"\bPosition\w*\s*\(", r"\bCTrade\b", r"\bHistory\w+\s*\(",
+        r"\b(?:File|Folder)\w+\s*\(", r"\bGlobalVariable\w*\s*\(",
+        r"\bCopy\w+\s*\(", r"\bSymbolInfo\w*\s*\(", r"\bi(?:ATR|AMA|Bands|Custom|MA)\s*\(",
+        r"\b(?:TimeCurrent|TimeGMT|TimeLocal|TimeTradeServer|GetTickCount\w*|"
+        r"GetMicrosecondCount|MathRand|MathSrand)\s*\(",
+        r"\bArrayResize\s*\(", r"#include",
+    )
+    for pattern in forbidden_div:
+        if re.search(pattern, div_code):
+            raise RuntimeError(f"Phase-10 divergence header is not pure logic: {pattern}")
+    for pattern in (r"\bObjectCreate\s*\(", r"\bOBJ_(?:TREND|RECTANGLE|HLINE|ARROW|TEXT|FIBO\w*)\b"):
+        if re.search(pattern, ea):
+            raise RuntimeError(f"Phase-10 EA contains forbidden chart drawing token: {pattern}")
+    for path in paths:
+        code = strip_comments_and_strings(path.read_text(encoding="utf-8"))
+        if path.name != "Emtt_TradeManager.mqh" and re.search(r"\bCopyTicks\w*\s*\(", code):
+            raise RuntimeError(f"Phase-10 CopyTicks outside the trade manager: {path.name}")
 
 
 def run_metaeditor(paths: list[Path]) -> None:

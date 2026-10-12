@@ -3279,6 +3279,72 @@ No tick-level trading signal; no tick-level CVD used for confidence, entry, SL, 
 - On a live M15 demo chart, the author confirms: (a) with a trade open and breakeven hit, a healthy strong trend keeps the normal trailing distance (Protect word unchanged, multiplier 1.0 visible in the journal on a trailing update); (b) a fake breakout / spike-and-fade pattern triggers `strong` divergence on the tick stream within seconds, tightens the trail to 0.5×, the STATUS line shows the strong-divergence message, and Row 13 Live SL reflects the tighter stop; (c) before breakeven the multiplier stays 1.0 even when momentum fades; (d) on a known sparse instrument (e.g. an exotic pair with few ticks/minute) the detector journals `inactive` within 60 seconds and trails exactly as Phase 8; (e) removing and re-attaching the EA mid-trade adopts the position, resets the tick buffer, runs warmup again, and resumes trailing normally; (f) with no position open (Panel B state) nothing changes per-tick and the per-tick cost is the same `UpdatePanel()` call as Phase 8; (g) the panel layout, header, colours, font and width are unchanged.
 - On H1 and other charts rule 19 still holds: no position can be opened there, so divergence never runs; the Price Row stays live.
 
+### Phase 10 delivery evidence — v1.80 (2026-10-12)
+
+**Build status: CODE DELIVERED — portable gates passed; native MetaEditor compilation and the author's live-terminal acceptance are still pending.** This stamp covers the source work only. It does **not** close the live bullets above.
+
+**Delivered scope.** Version `1.80` and the Phase 10 description line. The new pure header `Emtt_TickDivergence.mqh` holds all twelve 25.13 constants and implements the following:
+
+- the 25.3 tick sign (opposite Bid/Ask moves = 0);
+- a fixed 300-slot ring (static arrays inside `SEmttTickDivergenceState`, never resized) with running `cvdNow` / `cvdAbs` and the 15-minute cap;
+- incremental strength-5 tick swings on the mid price;
+- the density gate (10 → inactive, 20 → recover) and the 50-tick warmup;
+- the post-breakeven weak / strong reading with 3-tick confirmation and the hysteresis rule;
+- the pullback, stop-move and leg-left-window resets;
+- the 25.10 STATUS lines and the 25.11 journal lines.
+
+Edits to existing files:
+
+- **Trade manager:** `EmttTradeManagerFeedTick` arms on a new or adopted ticket, resets silently when flat, and reads only `SymbolInfoTick`. The single live trailing call passes `EmttTickDivMultiplier(div)`, swaps in the divergence STATUS line for that update only, appends ` x0.8` / ` x0.5` to the trailing journal factor, and resets the reading after a stop move.
+- **EA:** declares exactly one `SEmttTickDivergenceState g_tickDiv;`, resets it at init, calls the feed after `UpdatePanel()` in `OnTick`, and threads it through `EmttTradeManagerStep`.
+
+**Scope proof.** The fourteen untouched headers of 25.1 are byte-identical to the Phase 9 tree (the smoke contract hashes every one). Reversing only the `divergenceMult=1.0` argument and its one multiplication recovers the Phase 8/9 `Emtt_Trade.mqh` sha256 `00eee02dc193fd4674483ab8b78d2b2bad9e0c2fdda83706f969f6451dbc2eb4`. The product is evaluated left to right as `raw × conf × regime × news × divergenceMult`, so `1.0` reproduces the Phase 8 double exactly. Six inputs remain. EA handle-call counts remain `iATR = 5`, `iAMA = 6`, `iBands = 1`, and GlobalVariable API calls remain **11**. No file, chart object, `CopyRates`, `CopyBuffer` or `CopyTicks` call is added. Sections 1–25 are not rewritten.
+
+**Recorded implementation readings of the specification.**
+
+- **Tick source.** The ring is fed only from `SymbolInfoTick` on each `OnTick` (25.2 rule 3). It is not seeded with `CopyTicks`, so every session, including an adopted one, starts empty and runs its own warmup (25.2 rule 5, 25.13 "reset on adopt"). This also avoids a possible `CopyTicks` synchronisation wait on a tick. An exact duplicate (same `time_msc`, Bid and Ask) or an out-of-order tick is ignored, so the same stream always gives the same state.
+- **Timing.** Breakeven, trailing and position open/close are still decided on the existing 1-second closed-candle path. The tick path latches the reading, and the next closed-candle trailing step applies it. Before the manager has observed a fill, nothing is armed.
+- **Pivot details.** A plateau pivot sits at its oldest member, mirroring 13.3. The CVD recorded at a peak is the `cvdNow` sampled on that tick.
+- **Divergence formula.** `weak` needs `side × (peak1 − peak0) ≥ 0.10 × entry ATR` and `side × cvd1 < side × cvd0`. `strong` additionally needs `side × cvd1 ≤ 0.5 × side × cvd0`. Taken literally, this makes a new peak whose CVD is at or below zero, after a prior peak that was also at or below zero, read as `strong`. Confirmation counts consecutive ticks at each level, and `none → strong` may happen directly.
+- **Resets.** The "opposite swing then resume" reset applies to a latched reading. While nothing is latched, the classic two-peak comparison across a pullback is kept; otherwise no divergence could ever form, because almost every pair of tick highs has a tick low between them. A stop-move reset clears both peaks. While inactive (before breakeven, during warmup, or on a sparse feed) the reading is `none` and silent, and the legs keep being tracked.
+- **Journal.** The active / inactive / recovered flips are each written at most once per position ("once per session", 25.2 rule 4 / 25.6). The active / inactive / recovered lines use the `bar <time>` stamp shown in 25.11, formatted from the tick's own time. The divergence lines use `tick <time>` with seconds.
+
+**Portable gate results (executed on this delivery tree).**
+
+| Gate | Result |
+|---|---|
+| `python -m unittest discover -s tests -v` | **564 tests, OK** — the 522 existing Phase 2–9 tests plus **42 Phase 10 tests** (`tests/phase10_reference.py`, `tests/test_phase10_reference.py`) |
+| `python tools/mql5_compile_smoke.py` | **exit 0**, all **18** repository MQL sources; every Phase 2–9 marker plus the Phase 10 markers, include order, reversal hash and per-tick/pure-logic guards pass |
+| `python tools/mql5_parser_check.py` | **exit 0**, all **18** sources, **0 syntax errors**; negative control rejected first (**1 error node**), positive control accepted |
+| `git diff --check` | **exit 0** |
+| Native MetaEditor compilation | **Not executed** — `METAEDITOR_PATH` unset; MetaEditor/Wine not available in this workspace |
+| Author's M15/H1 live-terminal acceptance (a)–(g) | **Pending**, not asserted by portable tests |
+
+The Phase 9 contract test's fixed "17 sources" count now reads "at least 17" because Phase 10 adds a header; every Phase 2–9 assertion is otherwise unchanged. The Phase 9 `frozen_phase8` hashes for `Emtt_Trade.mqh` / `Emtt_TradeManager.mqh` are superseded by the Phase 10 reversal check and markers (comment in the smoke tool).
+
+**Parser identities.** Grammar `mskelton/tree-sitter-mql5` pinned at `3e4c4fdc5d42b1ec650bf5e6b5464017d05bcccf`, with `tree-sitter 0.26.0`. Every row returned `has_error=False` and `errors=0`.
+
+| Source | SHA-256 | Parser nodes |
+|---|---|---:|
+| `Experts/Emtt.mq5` | `2dacab0ff00d209ca59398580b1d3a4aa413e2fe5adea482eb2da91c66923835` | 22112 |
+| `Include/Emtt/Emtt_Dashboard.mqh` | `22392551ed94bb3c38badea5b74e589c5d90f6ca75f41d8cb4ced541b4077b70` | 3468 |
+| `Include/Emtt/Emtt_DynamicParams.mqh` | `24bd3519a4dccd6414474e6ff5854f9042a4237e96dd058ac4cccbde368ffdb8` | 5155 |
+| `Include/Emtt/Emtt_LearnFile.mqh` | `08ec0b308a3b1ba321e652ea657739eb884c7b41b42d72d6132fdd6e36ea2f5f` | 9125 |
+| `Include/Emtt/Emtt_Learning.mqh` | `936289a3709cbb61ca961567f53c36b632efded9e0672fd9d9e3e4882373b773` | 4270 |
+| `Include/Emtt/Emtt_MTF.mqh` | `e12d61226ce59eb29a0a2ed8855e7eb7feeb59a3407f21cfcf9a6528a7665a88` | 8729 |
+| `Include/Emtt/Emtt_ParamFile.mqh` | `051586fe54e02fdfe0114c9c29a7a9c073840377480cce2b561f910f6a1f153a` | 3576 |
+| `Include/Emtt/Emtt_ParamOpt.mqh` | `854845beb8a5d26a4c153c740d6b6eb859bcc564c04f7247b8d6f03b31233f22` | 3922 |
+| `Include/Emtt/Emtt_Regime.mqh` | `d62dcf089a7baf51e7d40e68b8c960ecc1327735e7be630652f39edc8a97c01d` | 4021 |
+| `Include/Emtt/Emtt_SMC.mqh` | `1691c923927429979c369be2c62e14b89afc834764f36f7fea33da6bc7146324` | 17201 |
+| `Include/Emtt/Emtt_Signal.mqh` | `434b27bda44a7985a4126bec1cc0a133c721cc249d8c1e76d61f9d6b1e1582fe` | 4819 |
+| `Include/Emtt/Emtt_Summary.mqh` | `ade2b7e66f647c7595ef03d9bbf6640fdd19b2317f357678a474d6a1537e98f1` | 3473 |
+| `Include/Emtt/Emtt_Supertrend.mqh` | `6b2d6a97abb7f4e683499da73d9012986da40f54dd013102daf83a6e5a115888` | 6654 |
+| `Include/Emtt/Emtt_TickDivergence.mqh` | `1d18283912b0b24487fdd5262c3ad7180ff2dae4f6c70e4f2779a4f0156d1b73` | 4184 |
+| `Include/Emtt/Emtt_Trade.mqh` | `d9361223bbe4e3d989f0acad868c0725bf3d63eb0ef958d74ff2f586276c0d3b` | 7399 |
+| `Include/Emtt/Emtt_TradeManager.mqh` | `05dee7ad77202e61e1334148dd1bb5eab84c179a2a31d6c8f9e3884f0afbb900` | 17067 |
+| `Include/Emtt/Emtt_TradePlan.mqh` | `e52a6005ff2ef2a7e75cef3c847c7ee80504bbf73fd6aa7028b03103fe2ba415` | 2573 |
+| `Include/Emtt/Emtt_VolumeFlow.mqh` | `5f311e6fa62bc67f4235e9316cf9a4f295354487f3f77d3b54d16d571f0e2eb3` | 8648 |
+
 ---
 
 ## 27. Phase 11 Planning Note — Graded Confidence Tiers & Continuous Signal Display

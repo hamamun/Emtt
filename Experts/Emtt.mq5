@@ -9,13 +9,14 @@
 //+------------------------------------------------------------------+
 #property copyright   "Author: Ham | Coder: Arena"
 #property link        ""
-#property version     "1.70"
+#property version     "1.80"
 #property description "Emtt V1.0 - MT5 Trading Expert Adviser."
 #property description "Phase 5: closed-bar volume flow (VWAP, profile, CVD) and higher-timeframe agreement."
 #property description "Phase 6: signal and trade plan (no orders)."
 #property description "Phase 7: self-learning signal filter."
 #property description "Phase 8: live trading - order, management, record."
 #property description "Phase 9: parameter-optimization persistence."
+#property description "Phase 10: tick-level CVD divergence detection for the trailing stop."
 #property description "Panel revamp: WHY removed, STATUS single-line, Summary Today/All-Time, dynamic width."
 #property description "Allowed analysis timeframes: M5 / M15 / M30 only."
 
@@ -33,6 +34,7 @@
 #include "../Include/Emtt/Emtt_Learning.mqh"
 #include "../Include/Emtt/Emtt_ParamFile.mqh"
 #include "../Include/Emtt/Emtt_ParamOpt.mqh"
+#include "../Include/Emtt/Emtt_TickDivergence.mqh"
 #include "../Include/Emtt/Emtt_Trade.mqh"
 #include "../Include/Emtt/Emtt_TradeManager.mqh"
 
@@ -93,6 +95,7 @@ SEmttSignalState           g_signal;
 SEmttSummaryState          g_summary;
 SEmttLearningState         g_learning;
 SEmttParamOptState g_paramOpt;
+SEmttTickDivergenceState g_tickDiv;
 SEmttTradeState            g_trade;
 SEmttBrokerOffsetState     g_brokerOffset;
 SEmttRegimeMeasurements    g_snapshotMeasurements;
@@ -1847,7 +1850,7 @@ void EmttTradeManagerRefresh()
    if(g_paramOpt.enabled && g_paramOpt.positionFrozen && g_trade.positionOpen)
       g_trade.entryMoodBar=g_paramOpt.frozenBar;
    EmttTradeManagerStep(g_trade,runtime,g_signal.plan,g_supertrend,g_smc,
-                        g_volumeFlow,g_learning.file);
+                        g_volumeFlow,g_learning.file,g_tickDiv);
    EmttLearningRecordTradeEvents();
   }
 
@@ -2495,6 +2498,9 @@ int OnInit()
    // symbol and timeframe is bound, loaded and rewritten by the replay.
    EmttLearnStateReset(g_learning);
    EmttTradeManagerInit(g_trade,g_symbol,g_timeframe,InpMagicNumber);
+   // Phase 10 (25.2 rule 11): the tick buffer starts empty; an adopted
+   // position gets a fresh session and warmup on its first tick.
+   EmttTickDivReset(g_tickDiv);
    EmttParamOptReset(g_paramOpt,InpParamOptimization);
    EmttParamOptimizationAttachAndLoad(iTime(g_symbol,g_timeframe,1));
    if(g_paramOpt.enabled) EmttSyncFrozenPositionContext();
@@ -2534,9 +2540,12 @@ void OnDeinit(const int reason)
   }
 
 // Ticks update only the live price row / panel; no indicators run here.
+// Phase 10 (25.1): after the panel, the latest tick feeds the O(1)
+// divergence state of an open Emtt position (nothing when flat).
 void OnTick()
   {
    UpdatePanel();
+   EmttTradeManagerFeedTick(g_trade,g_tickDiv);
   }
 
 void OnTimer()
