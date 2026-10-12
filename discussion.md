@@ -7,6 +7,8 @@ _Last reviewed: 2026-10-12. This document summarizes this conversation and the c
 - Repository: `hamamun/Emtt`.
 - Working branch: `arena/0bd7bd00-emtt`.
 - Starting main commit: `2053932c400f293e40825251411cc85061fb57c9`.
+- Implementation commit: `74b9d58` (`Harden Emtt startup, execution checks, and pending order lifecycle`).
+- Pull request: [#26 — Harden Emtt startup, execution validation, and pending lifecycle](https://github.com/hamamun/Emtt/pull/26), opened against `main`. Check GitHub for its current review/check/merge status.
 - Main EA: `Experts/Emtt.mq5`; custom modules: `Include/Emtt/`.
 - Supported analysis timeframes: M5, M15, M30.
 - Source `#property version` is still **1.90**. It was not bumped for these follow-up fixes; a version label alone does not identify the updated build. Compile the current source.
