@@ -17,6 +17,168 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "Experts" / "Emtt.mq5"
+
+# --- Phase 11 (Emtt.md 28.1): the only edits to three frozen headers. ---
+# Each pair is (Phase 10 text, Phase 11 text). Reversing them must give
+# back the frozen hash byte-for-byte, so any other change fails.
+PHASE11_SIGNAL_EDITS = (
+    ('#include "Emtt_TradePlan.mqh"\n\n//--- 17.3',
+     '#include "Emtt_TradePlan.mqh"\n#include "Emtt_Tier.mqh"\n\n//--- 17.3'),
+    ('      case EMTT_SIG_WAIT_BELOW_BAR:\n'
+     '         return "below the "+IntegerToString(state.moodBar)+"% bar";\n'
+     '      case EMTT_SIG_WAIT_BELOW_KEEP:\n'
+     '         return "below the "+\n'
+     '                IntegerToString(state.moodBar-EMTT_SIG_STAY_MARGIN)+\n'
+     '                "% level that keeps a "+EmttPlanSideName(state.waitSide);\n',
+     '      case EMTT_SIG_WAIT_BELOW_BAR:\n'
+     '         return "below the "+IntegerToString(EMTT_TIER_DISPLAY_MIN)+\n'
+     '                "% display level (Very low)";\n'
+     '      case EMTT_SIG_WAIT_BELOW_KEEP:\n'
+     '         return "below the "+IntegerToString(EMTT_TIER_DISPLAY_MIN)+\n'
+     '                "% level that keeps a "+EmttPlanSideName(state.waitSide)+\n'
+     '                " (Very low)";\n'),
+    ('      case EMTT_SIG_WAIT_BELOW_BAR:\n'
+     '         return "Watching \\x2014 confidence "+number+", below the "+\n'
+     '                IntegerToString(state.moodBar)+"% bar.";\n'
+     '      case EMTT_SIG_WAIT_BELOW_KEEP:\n'
+     '         return "Watching \\x2014 confidence "+number+", below the "+\n'
+     '                IntegerToString(state.moodBar-EMTT_SIG_STAY_MARGIN)+\n'
+     '                "% level that keeps a "+EmttPlanSideName(state.waitSide)+".";\n',
+     '      case EMTT_SIG_WAIT_BELOW_BAR:\n'
+     '      case EMTT_SIG_WAIT_BELOW_KEEP:\n'
+     '         // Phase 11 (28.6): below 35% the real number and tier show.\n'
+     '         return EmttTierWatchingLine(state.confidence);\n'),
+    ('   const int barLevel=state.moodBar;\n'
+     '   const int keepLevel=barLevel-EMTT_SIG_STAY_MARGIN;\n',
+     '   // Phase 11 (28.3): the display gate is the fixed 35% tier floor for\n'
+     '   // entering and keeping; the mood / learned bar stays internal.\n'
+     '   const int barLevel=EMTT_TIER_DISPLAY_MIN;\n'
+     '   const int keepLevel=EMTT_TIER_DISPLAY_MIN;\n'),
+    ('      // A showing BUY or SELL stays while its own number is at least\n'
+     '      // bar - 5; entering needs the bar, staying needs bar - 5.\n',
+     '      // A showing BUY or SELL stays while its own number is at least\n'
+     '      // 35%; Phase 11 (28.3) enters and keeps at the same tier floor.\n'),
+    ('                        EmttSignalMoodWord(mood),barLevel,\n',
+     '                        EmttSignalMoodWord(mood),state.moodBar,\n'),
+)
+
+PHASE11_TRADE_EDITS = (
+    ('#include "Emtt_TradePlan.mqh"\n',
+     '#include "Emtt_TradePlan.mqh"\n#include "Emtt_Tier.mqh"\n'),
+    ('   EMTT_TRADE_GATE_MARGIN\n  };',
+     '   EMTT_TRADE_GATE_MARGIN,\n   EMTT_TRADE_GATE_BELOW_THRESHOLD   // Phase 11 (28.4)\n  };'),
+    ('   bool   marginFits;\n  };',
+     '   bool   marginFits;\n   int    confidence;      // Phase 11: displayed confidence\n'
+     '   int    autoTradeAbove;  // Phase 11: "Auto-trade above (%)"\n  };'),
+    ('      return EMTT_TRADE_GATE_AUTO_OFF;\n   if(!gateInput.terminalAllowed',
+     '      return EMTT_TRADE_GATE_AUTO_OFF;\n'
+     '   if(!EmttTierAutoTradeAllowed(gateInput.confidence,\n'
+     '                                gateInput.autoTradeAbove))\n'
+     '      return EMTT_TRADE_GATE_BELOW_THRESHOLD;\n'
+     '   if(!gateInput.terminalAllowed'),
+    ('string EmttTradeGateStatus(const EEmttTradeGateFailure failure,\n'
+     '                           const int spreadPoints)\n',
+     'string EmttTradeGateStatus(const EEmttTradeGateFailure failure,\n'
+     '                           const int spreadPoints,\n'
+     '                           const int confidence=0,const int side=0,\n'
+     '                           const int autoTradeAbove=0)\n'),
+    ('         return "No trade "+EmttTradeDash()+" not enough margin";\n      default:',
+     '         return "No trade "+EmttTradeDash()+" not enough margin";\n'
+     '      case EMTT_TRADE_GATE_BELOW_THRESHOLD:\n'
+     '         return EmttTierBelowThresholdLine(confidence,side,autoTradeAbove);\n'
+     '      default:'),
+    ('   if(confidence>=90) return EMTT_TRADE_SIZE_CONF_90;\n'
+     '   if(confidence>=80) return EMTT_TRADE_SIZE_CONF_80;\n'
+     '   if(confidence>=70) return EMTT_TRADE_SIZE_CONF_70;\n'
+     '   // The stay band can hold a plan at 55-59. Use the lowest approved\n'
+     '   // confidence multiplier there; a new plan itself still met its bar.\n'
+     '   return EMTT_TRADE_SIZE_CONF_60;\n',
+     '   // Phase 11 (28.5): the multiplier follows the displayed tier -\n'
+     '   // Low 0.7 / Normal 1.0 / Confident 1.2 / High 1.5.\n'
+     '   return EmttTierSizeMultiplier(confidence);\n'),
+)
+
+PHASE11_DASHBOARD_EDITS = (
+    ("#define EMTT_CLR_SELL   C'235,111,111'   // SELL / loss / warning   #EB6F6F\n",
+     "#define EMTT_CLR_SELL   C'235,111,111'   // SELL / loss / warning   #EB6F6F\n"
+     "// Phase 11 (28.2): the two intermediate signal shades, blends of the\n"
+     "// signal colour toward the soft text grey C'200,200,200'.\n"
+     "#define EMTT_CLR_BUY_LOW     C'156,204,176'   // Low BUY (50%)     #9CCCB0\n"
+     "#define EMTT_CLR_SELL_LOW    C'218,156,156'   // Low SELL (50%)    #DA9C9C\n"
+     "#define EMTT_CLR_BUY_NORMAL  C'133,205,163'   // Normal BUY (25%)  #85CDA3\n"
+     "#define EMTT_CLR_SELL_NORMAL C'226,133,133'   // Normal SELL (25%) #E28585\n"),
+    ('#define EMTT_FONT       "Segoe UI"\n',
+     '#define EMTT_FONT       "Segoe UI"\n'
+     '#define EMTT_FONT_BOLD  "Segoe UI Bold"  // Phase 11: High-confidence SIGNAL\n'),
+    ('   int    signalSize;  // rule 16: 14 for BUY/SELL, else 12\n',
+     '   int    signalSize;  // rule 16: 14 for BUY/SELL, else 12\n'
+     '   bool   signalBold;  // Phase 11 (28.2): bold for the High tier only\n'),
+    ('int    b_kind[];                // 0=header text, 1=row text, 2=separator\n',
+     'int    b_kind[];                // 0=header text, 1=row text, 2=separator\n'
+     'bool   b_bold[];                // Phase 11: bold face for this row\n'),
+    ('double EmttTextWidth(const string text,const int size)\n',
+     'double EmttTextWidth(const string text,const int size,const bool bold=false)\n'),
+    ('   const string key=IntegerToString(size)+"|"+text;\n',
+     '   const string key=(bold ? "B" : "")+IntegerToString(size)+"|"+text;\n'),
+    ('   ObjectSetString(0,name,OBJPROP_FONT,EMTT_FONT);\n'
+     '   ObjectSetInteger(0,name,OBJPROP_FONTSIZE,size);\n'
+     '   ObjectSetString(0,name,OBJPROP_TEXT,text);\n'
+     '   ChartRedraw();\n',
+     '   ObjectSetString(0,name,OBJPROP_FONT,(bold ? EMTT_FONT_BOLD : EMTT_FONT));\n'
+     '   ObjectSetInteger(0,name,OBJPROP_FONTSIZE,size);\n'
+     '   ObjectSetString(0,name,OBJPROP_TEXT,text);\n'
+     '   ChartRedraw();\n'),
+    ('void BAdd(const string t,const color c,const int sz,const int k)\n'
+     '  {\n'
+     '   ArrayResize(b_text,b_n+1);\n'
+     '   ArrayResize(b_clr,b_n+1);\n'
+     '   ArrayResize(b_size,b_n+1);\n'
+     '   ArrayResize(b_kind,b_n+1);\n'
+     '   b_text[b_n]=t;\n'
+     '   b_clr[b_n]=c;\n'
+     '   b_size[b_n]=sz;\n'
+     '   b_kind[b_n]=k;\n',
+     'void BAdd(const string t,const color c,const int sz,const int k,\n'
+     '          const bool bold=false)\n'
+     '  {\n'
+     '   ArrayResize(b_text,b_n+1);\n'
+     '   ArrayResize(b_clr,b_n+1);\n'
+     '   ArrayResize(b_size,b_n+1);\n'
+     '   ArrayResize(b_kind,b_n+1);\n'
+     '   ArrayResize(b_bold,b_n+1);\n'
+     '   b_text[b_n]=t;\n'
+     '   b_clr[b_n]=c;\n'
+     '   b_size[b_n]=sz;\n'
+     '   b_kind[b_n]=k;\n'
+     '   b_bold[b_n]=bold;\n'),
+    ('void ApplyLabel(const string name,const int x,const int y,const string text,\n'
+     '                const color clr,const int size)\n'
+     '  {\n'
+     '   ObjectSetInteger(0,name,OBJPROP_CORNER,CORNER_LEFT_UPPER);\n'
+     '   ObjectSetInteger(0,name,OBJPROP_XDISTANCE,x);\n'
+     '   ObjectSetInteger(0,name,OBJPROP_YDISTANCE,y);\n'
+     '   ObjectSetString(0,name,OBJPROP_FONT,EMTT_FONT);\n',
+     'void ApplyLabel(const string name,const int x,const int y,const string text,\n'
+     '                const color clr,const int size,const bool bold=false)\n'
+     '  {\n'
+     '   ObjectSetInteger(0,name,OBJPROP_CORNER,CORNER_LEFT_UPPER);\n'
+     '   ObjectSetInteger(0,name,OBJPROP_XDISTANCE,x);\n'
+     '   ObjectSetInteger(0,name,OBJPROP_YDISTANCE,y);\n'
+     '   ObjectSetString(0,name,OBJPROP_FONT,(bold ? EMTT_FONT_BOLD : EMTT_FONT));\n'),
+    ('                    b_text[i],b_clr[i],b_size[i]);\n',
+     '                    b_text[i],b_clr[i],b_size[i],b_bold[i]);\n'),
+    ('   BAdd(d.signal,d.signalClr,d.signalSize,1);\n',
+     '   BAdd(d.signal,d.signalClr,d.signalSize,1,d.signalBold);\n'),
+    ('      maxw=MathMax(maxw,(int)EmttTextWidth(b_text[i],b_size[i]));\n',
+     '      maxw=MathMax(maxw,(int)EmttTextWidth(b_text[i],b_size[i],b_bold[i]));\n'),
+)
+
+
+def phase11_reverse(text: str, edits: tuple) -> str:
+    """Undo the Phase 11 edit pairs, last first."""
+    for old, new in reversed(edits):
+        text = text.replace(new, old, 1)
+    return text
 # Resolve only repo-relative quoted includes. MetaEditor owns angle-bracket
 # standard-library headers such as <Trade/Trade.mqh>.
 INCLUDE_RE = re.compile(r'^\s*#\s*include\s*"([^"]+)"', re.MULTILINE)
@@ -189,6 +351,7 @@ def check_contract(paths: list[Path]) -> None:
         "Include/Emtt/Emtt_VolumeFlow.mqh",
         "Include/Emtt/Emtt_MTF.mqh",
         "Include/Emtt/Emtt_TradePlan.mqh",
+        "Include/Emtt/Emtt_Tier.mqh",
         "Include/Emtt/Emtt_Signal.mqh",
         "Include/Emtt/Emtt_Summary.mqh",
         "Include/Emtt/Emtt_LearnFile.mqh",
@@ -210,7 +373,9 @@ def check_contract(paths: list[Path]) -> None:
     if '#include "../Include/Emtt/Emtt_Dashboard.mqh"' not in ea:
         raise RuntimeError("Phase-1 dashboard include path changed")
     dashboard = ROOT / "Include" / "Emtt" / "Emtt_Dashboard.mqh"
-    digest = hashlib.sha256(dashboard.read_bytes()).hexdigest()
+    # Phase 11 (28.2) adds only two shades, a bold face and its plumbing.
+    digest = hashlib.sha256(phase11_reverse(dashboard.read_text(encoding="utf-8"),
+                                            PHASE11_DASHBOARD_EDITS).encode()).hexdigest()
     # Phase-1 digest cc4169b5... superseded by the author-approved panel
     # revamp of 2026-10-11 (WHY removed, STATUS single-line, Summary
     # Today/All-Time, dynamic width, no cap).
@@ -374,7 +539,10 @@ def check_contract(paths: list[Path]) -> None:
 
     #--- Phase 6 (17.9) -------------------------------------------------
     phase6_trade_plan = (ROOT / "Include" / "Emtt" / "Emtt_TradePlan.mqh").read_text()
-    phase6_signal = (ROOT / "Include" / "Emtt" / "Emtt_Signal.mqh").read_text()
+    # Phase 11 (28.3) edits are reversed first, so every earlier check
+    # still reads the signal header it froze.
+    phase6_signal = phase11_reverse((ROOT / "Include" / "Emtt" / "Emtt_Signal.mqh").read_text(),
+                                    PHASE11_SIGNAL_EDITS)
     phase6_markers = (
         (phase6_signal, r"EMTT_SIG_WEIGHT_TREND\s+0\.30", "trend confidence weight"),
         (phase6_signal, r"EMTT_SIG_WEIGHT_STRUCTURE\s+0\.30", "structure confidence weight"),
@@ -840,6 +1008,8 @@ def check_contract(paths: list[Path]) -> None:
     }
     for name, expected in frozen_phase8.items():
         raw = (ROOT / "Include" / "Emtt" / name).read_bytes()
+        if name == "Emtt_Dashboard.mqh":
+            raw = phase11_reverse(raw.decode("utf-8"), PHASE11_DASHBOARD_EDITS).encode()
         if hashlib.sha256(raw).hexdigest() != expected:
             raise RuntimeError(f"Phase-9 scope violation: protected {name} changed")
     signal_original = phase6_signal.replace("                       const int learnedBar,\n", "", 1)
@@ -1023,7 +1193,8 @@ def check_phase10(paths: list[Path], ea: str, trade: str, manager: str) -> None:
 
     # 25.1a: the trade header carries only the argument and the one
     # multiplication; reversing them restores the Phase 8/9 delivery.
-    if hashlib.sha256(phase10_trade_reverse(trade).encode()).hexdigest() != PHASE8_TRADE_SHA256:
+    if hashlib.sha256(phase10_trade_reverse(phase11_reverse(trade, PHASE11_TRADE_EDITS))
+                      .encode()).hexdigest() != PHASE8_TRADE_SHA256:
         raise RuntimeError("Emtt_Trade.mqh changed beyond the 25.1a divergenceMult edit")
     if len(re.findall(r"\bEmttTradeTrailCalculate\s*\(", manager)) != 1:
         raise RuntimeError("Phase-10 trailing must have exactly one live call site")
@@ -1045,13 +1216,17 @@ def check_phase10(paths: list[Path], ea: str, trade: str, manager: str) -> None:
         "Emtt_Signal.mqh": "434b27bda44a7985a4126bec1cc0a133c721cc249d8c1e76d61f9d6b1e1582fe",
         "Emtt_Dashboard.mqh": "22392551ed94bb3c38badea5b74e589c5d90f6ca75f41d8cb4ced541b4077b70",
     }
+    phase11_reversals = {"Emtt_Signal.mqh": PHASE11_SIGNAL_EDITS,
+                         "Emtt_Dashboard.mqh": PHASE11_DASHBOARD_EDITS}
     for name, expected in frozen_phase9.items():
         raw = (ROOT / "Include" / "Emtt" / name).read_bytes()
+        if name in phase11_reversals:  # Phase 11 (28.1) reversible edits
+            raw = phase11_reverse(raw.decode("utf-8"), phase11_reversals[name]).encode()
         if hashlib.sha256(raw).hexdigest() != expected:
             raise RuntimeError(f"Phase-10 scope violation: protected {name} changed")
 
     # 25.2 / 25.13: no new input, handle, file or GlobalVariable.
-    inputs = re.findall(r"^input\s+(?!group\b)", ea, re.MULTILINE)
+    inputs = re.findall(r"^input\s+(?!group\b)(?![^\n]*InpAutoTradeAbove)", ea, re.MULTILINE)
     if len(inputs) != 6:
         raise RuntimeError("Phase 10 adds no input: six inputs total")
     if re.search(r"^input[^\n]*(?:[Dd]iverg|[Tt]ick)", ea, re.MULTILINE):
@@ -1096,6 +1271,92 @@ def check_phase10(paths: list[Path], ea: str, trade: str, manager: str) -> None:
         code = strip_comments_and_strings(path.read_text(encoding="utf-8"))
         if path.name != "Emtt_TradeManager.mqh" and re.search(r"\bCopyTicks\w*\s*\(", code):
             raise RuntimeError(f"Phase-10 CopyTicks outside the trade manager: {path.name}")
+
+    check_phase11(paths, ea, trade, manager)
+
+
+def check_phase11(paths: list[Path], ea: str, trade: str, manager: str) -> None:
+    """28.8: graded confidence tiers and continuous signal display."""
+    tier_path = ROOT / "Include" / "Emtt" / "Emtt_Tier.mqh"
+    tier = tier_path.read_text(encoding="utf-8")
+    signal = (ROOT / "Include" / "Emtt" / "Emtt_Signal.mqh").read_text(encoding="utf-8")
+    dashboard = (ROOT / "Include" / "Emtt" / "Emtt_Dashboard.mqh").read_text(encoding="utf-8")
+    markers = (
+        (tier, r"EMTT_TIER_DISPLAY_MIN\s+35\b", "35% display floor"),
+        (tier, r"EMTT_TIER_LOW_MAX\s+45\b", "Low tier 35-45"),
+        (tier, r"EMTT_TIER_NORMAL_MAX\s+55\b", "Normal tier 46-55"),
+        (tier, r"EMTT_TIER_CONFIDENT_MAX\s+70\b", "Confident tier 56-70, High 71+"),
+        (tier, r"EMTT_TIER_AUTO_MIN\s+35\b", "auto-trade minimum 35"),
+        (tier, r"EMTT_TIER_AUTO_MAX\s+100\b", "auto-trade maximum 100"),
+        (tier, r"EMTT_TIER_AUTO_DEFAULT\s+56\b", "auto-trade default 56"),
+        (tier, r"EMTT_TIER_SIZE_LOW\s+0\.7\b", "Low 0.7 lots multiplier"),
+        (tier, r"EMTT_TIER_SIZE_NORMAL\s+1\.0\b", "Normal 1.0 lots multiplier"),
+        (tier, r"EMTT_TIER_SIZE_CONFIDENT\s+1\.2\b", "Confident 1.2 lots multiplier"),
+        (tier, r"EMTT_TIER_SIZE_HIGH\s+1\.5\b", "High 1.5 lots multiplier"),
+        (tier, r'"Very low"', "Very low label"),
+        (tier, r'"Low confidence"', "Low label"),
+        (tier, r'"Normal"', "Normal label"),
+        (tier, r'"Confident"', "Confident label"),
+        (tier, r'"High confidence"', "High label"),
+        (tier, r'"Confidence: --%"', "no-number Row 3"),
+        (tier, r'"Watching \\x2014 confidence "', "below-35 Watching line"),
+        (tier, r'"Signal active \\x2014 "', "below-threshold Signal active line"),
+        (tier, r'", watching \(auto-trade threshold "', "threshold wording"),
+        (signal, r'#include "Emtt_Tier\.mqh"', "signal sees the tiers"),
+        (signal, r"const int barLevel=EMTT_TIER_DISPLAY_MIN;", "35% entering level"),
+        (signal, r"const int keepLevel=EMTT_TIER_DISPLAY_MIN;", "35% keeping level"),
+        (signal, r"EmttTierWatchingLine\(state\.confidence\)", "below-35 STATUS line"),
+        (trade, r'#include "Emtt_Tier\.mqh"', "trade sees the tiers"),
+        (trade, r"EMTT_TRADE_GATE_BELOW_THRESHOLD", "threshold gate"),
+        (trade, r"return EmttTierSizeMultiplier\(confidence\);", "tier lot multiplier"),
+        (manager, r"gate\.autoTradeAbove=runtime\.autoTradeAbove;", "threshold reaches the gate"),
+        (manager, r"gate\.confidence=runtime\.confidence;", "displayed number reaches the gate"),
+        (dashboard, r"EMTT_CLR_BUY_LOW\s+C'156,204,176'", "Low BUY shade"),
+        (dashboard, r"EMTT_CLR_SELL_LOW\s+C'218,156,156'", "Low SELL shade"),
+        (dashboard, r"EMTT_CLR_BUY_NORMAL\s+C'133,205,163'", "Normal BUY shade"),
+        (dashboard, r"EMTT_CLR_SELL_NORMAL\s+C'226,133,133'", "Normal SELL shade"),
+        (dashboard, r'EMTT_FONT_BOLD\s+"Segoe UI Bold"', "High-tier bold face"),
+        (ea, r'#include "\.\./Include/Emtt/Emtt_Tier\.mqh"', "quoted tier include"),
+        (ea, r"input int  InpAutoTradeAbove=56;\s*// Auto-trade above \(%\)", "threshold input"),
+        (ea, r"g_autoTradeAbove=EmttTierAutoTradeAbove\(InpAutoTradeAbove\);", "threshold clamp"),
+        (ea, r"runtime\.autoTradeAbove=g_autoTradeAbove;", "threshold reaches the manager"),
+        (ea, r"EmttTierConfidenceRow\(", "tiered Row 3"),
+        (ea, r"EmttTierSignalStyle\(", "tiered Row 2 style"),
+        (ea, r'#property version\s+"1\.90"', "Phase 11 version stamp"),
+        (ea, r'#property description "Phase 11: graded confidence tiers and continuous signal display\."',
+         "Phase 11 description line"),
+    )
+    for source, pattern, description in markers:
+        if not re.search(pattern, source):
+            raise RuntimeError(f"missing Phase-11 rule: {description}")
+    if not re.search(r'input bool InpAutoTrading=false;[^\n]*\ninput int  InpAutoTradeAbove=56;', ea):
+        raise RuntimeError("Auto-trade above (%) must sit directly below Auto Trading ON/OFF")
+    order = [ea.find(name) for name in ("Emtt_TradePlan.mqh", "Emtt_Tier.mqh", "Emtt_Signal.mqh")]
+    if min(order) < 0 or order != sorted(order):
+        raise RuntimeError("Phase-11 tier include must sit between TradePlan and Signal")
+    inputs = re.findall(r"^input\s+(?!group\b)", ea, re.MULTILINE)
+    if len(inputs) != 7:
+        raise RuntimeError("Phase 11 adds exactly one input: seven inputs total")
+    if "Emtt_Tier.mqh" not in {path.name for path in paths}:
+        raise RuntimeError("Emtt_Tier.mqh is not in the EA include graph")
+    if not tier_path.read_bytes().isascii():
+        raise RuntimeError("Phase-11 tier header is not ASCII-only")
+    tier_code = strip_comments_and_strings(tier)
+    for pattern in (
+        r"\bObject\w*\s*\(", r"\bOBJ_\w+", r"\bChart\w+\s*\(", r"\bOrder\w*\s*\(",
+        r"\bPosition\w*\s*\(", r"\bCTrade\b", r"\bHistory\w+\s*\(",
+        r"\b(?:File|Folder)\w+\s*\(", r"\bGlobalVariable\w*\s*\(", r"\bCopy\w+\s*\(",
+        r"\bSymbolInfo\w*\s*\(", r"\bi(?:ATR|AMA|Bands|Custom|MA)\s*\(", r"\bPrint\w*\s*\(",
+        r"\b(?:TimeCurrent|TimeGMT|TimeLocal|TimeTradeServer|GetTickCount\w*)\s*\(",
+        r"#include",
+    ):
+        if re.search(pattern, tier_code):
+            raise RuntimeError(f"Phase-11 tier header is not pure logic: {pattern}")
+    # 28.1: Phase 9's files and decision rule are untouched by the tiers.
+    for path in paths:
+        if path.name in ("Emtt_ParamFile.mqh", "Emtt_ParamOpt.mqh", "Emtt_Learning.mqh",
+                         "Emtt_LearnFile.mqh") and "EmttTier" in path.read_text(encoding="utf-8"):
+            raise RuntimeError(f"Phase-11 tiers leaked into {path.name}")
 
 
 def run_metaeditor(paths: list[Path]) -> None:

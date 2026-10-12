@@ -3381,3 +3381,149 @@ The Phase 9 contract test's fixed "17 sources" count now reads "at least 17" bec
 **What changes in the panel (summary):** no new row; palette gains two intermediate signal shades so low confidence is visually softer than high confidence without being grey; the Confidence row always shows a real percentage **whenever Emtt has computed one** (including below-35% WAIT states), formatted exactly as one line `Confidence: NN% — Very low` / `— Low confidence` / `— Normal` / `— Confident` / `— High confidence`. `Confidence: --%` is reserved for three states only: loading history, market closed, and incompatible chart — never for an honest but low WAIT reading. WAIT's ■ stays grey for the SIGNAL row below 35% and for the three no-number states; Row 10 STATUS keeps all existing reasons and gains tier-appropriate wording (e.g. *"Watching — confidence 28% (Very low), no trade."* while below 35%, or *"Signal active — Low confidence BUY, watching (auto-trade threshold 56%)."* when the tier is displayed but below the user's auto-trade threshold). Everything else — Header, Price Row, Regime, Entry/SL/TP, RR, Session, WHY, Summary, and the LIVE TRADE block — stays exactly as Phases 8/9 built it.
 
 **What the Phase 11 spec must cover when written:** the exact colour hex values for the two intermediate tiers, the lot-size multiplier mapping (0.7× / 1.0× / 1.2× / 1.5× onto the four non-WAIT tiers), the numeric Auto-trade-above input (35–100, default 56), the interaction with the existing mood bar and Phase 9 learned bar (both retire as the display/trade gate but remain available internally), the STATUS-line wording for each tier (including the below-threshold "watching" line and the <35% WAIT line showing the real percentage), test coverage for the display / gate split, and guards ensuring WAIT below 35% still empties Rows 4–8 while all non-WAIT tiers fill them with 17.4 levels. No indicator, parameter or management change beyond the threshold input and the tier display.
+
+---
+
+## 28. Phase 11 — Graded Confidence Tiers & Continuous Signal Display
+
+**Status: BUILDER-WRITTEN SPEC (2026-10-12), written from the agreed planning note of §27 at the author's request to implement Phase 11 ("implement Phase 10 & 11 … from Emtt.md, properly and completely"). Every number, label and wording below is taken from §27. Where §27 left a choice open, this section records the builder's choice and marks it *(builder choice)*. The author may replace any of these; nothing here rewrites Sections 1–27.**
+
+### 28.1 Files
+
+| File | Change |
+|---|---|
+| `Include/Emtt/Emtt_Tier.mqh` | **New.** Pure logic: tier boundaries, labels, the Row 3 text, the lot multiplier, the threshold clamp and gate, and the two STATUS lines. ASCII only. No order, chart object, file, handle, clock or `Print`. |
+| `Include/Emtt/Emtt_Signal.mqh` | Surgical, reversible edits only: the tier include, the 35% enter/keep levels, and the below-35% WAIT texts. The smoke contract reverses them to the Phase 9 hash `434b27bd…`. |
+| `Include/Emtt/Emtt_Trade.mqh` | Surgical, reversible edits only: the tier include, the `BELOW_THRESHOLD` gate (enum value, two gate-input fields, one check, one status case), and the tier lot multiplier. Reversing them and then the Phase 10 edit gives back `00eee02d…`. |
+| `Include/Emtt/Emtt_Dashboard.mqh` | Surgical, reversible edits only: two intermediate shades (four colours), one bold face, `signalBold`, and the per-row bold plumbing. These reverse to the panel digest `22392551…`. No row is added or removed. |
+| `Include/Emtt/Emtt_TradeManager.mqh` | `autoTradeAbove` in the runtime. The gate receives the displayed number and the threshold. The order journal names the tier and its multiplier. Step clears a gate line once its plan has ended. |
+| `Experts/Emtt.mq5` | Version `1.90` and a description line. Tier include between TradePlan and Signal. The new input. Clamp and journal at init. Tiered Rows 2–3. Learning hold reason read at the 35% floor. Tier label on the signal journal lines. |
+| Byte-identical | DynamicParams, Regime, Supertrend, SMC, VolumeFlow, MTF, TradePlan, Summary, LearnFile, Learning, ParamFile, ParamOpt, TickDivergence. |
+
+### 28.2 The five tiers (whole-number displayed confidence)
+
+| Confidence | Tier label (Row 3) | SIGNAL row (Row 2) | Rows 4–8 |
+|---|---|---|---|
+| no number | — | `■ WAIT`, grey, size 12 | `--` |
+| 0–34 | `Very low` | `■ WAIT`, grey `#C8C8C8`, size 12 | `--` |
+| 35–45 | `Low confidence` | `▲ BUY` `#9CCCB0` / `▼ SELL` `#DA9C9C`, size 14 | 17.4 levels |
+| 46–55 | `Normal` | `▲ BUY` `#85CDA3` / `▼ SELL` `#E28585`, size 14 | 17.4 levels |
+| 56–70 | `Confident` | `▲ BUY` `#6FCF97` / `▼ SELL` `#EB6F6F`, size 14 | 17.4 levels |
+| 71–100 | `High confidence` | as Confident, **bold** (`Segoe UI Bold`), size 14 | 17.4 levels |
+
+- **Row 3** is one line: `Confidence: NN% — <label>`. `Confidence: --%` appears only while no number exists: history loading, market closed, incompatible chart, or the four views not yet ready. It never appears for an honest low reading.
+- **Shades** *(builder choice)*: Low is the 50 % blend and Normal the 25 % blend of the full signal colour toward the soft text grey `C'200,200,200'`. Both stay visibly green / red and never become grey.
+- **Bold** *(builder choice)*: the High tier uses the face name `Segoe UI Bold`, keeping the rule-16 size of 14. Width measurement uses the same face, so the dynamic width still fits.
+
+### 28.3 The display gate — the mood bar and the learned bar retire as gates
+
+- The signal engine enters a plan when the four-view number on its side is **≥ 35** and the 17.4 plan builds. It keeps the plan while that number stays **≥ 35**. The old *bar / bar − 5* pair becomes *35 / 35* *(builder choice: one floor, so the panel never shows BUY/SELL below 35 %)*.
+- The mood bar of 9.2.4 and the Phase 9 learned bar remain computed and **internal**: they still feed the journal (`bar NN%`), the plan ticket (`parBar`), the `.params` file and the near-miss logic. Those files and that logic are byte-identical. Because a plan now starts from 35 %, a below-bar near-miss mostly arises only where the plan cannot be built. This follows directly from "no change to the near-miss logic".
+- Every other WAIT reason of 17.6 / 19.7 is kept: no target, R:R, just ended, and learning holds back. The learning hold reason is judged at the same 35 % floor.
+
+### 28.4 The input — "Auto-trade above (%)"
+
+- `input int InpAutoTradeAbove=56; // Auto-trade above (%)` sits in the Auto Trading group directly below `Auto Trading ON/OFF`, making seven inputs in total.
+- The input takes whole numbers **35–100**. A value outside that range is clamped once at init and journalled: `Emtt | Auto-trade above NN% is outside 35-100 | using MM%` *(builder choice: MQL inputs cannot be range-limited in the dialog)*.
+- The gate order is Auto Trading ON first, then **displayed confidence ≥ threshold**, then the unchanged Phase 8 gates (terminal/account, market open, one Emtt trade, spread, margin). Market versus pending stays exactly as 21.6, applied whenever the threshold is met at a closed candle.
+
+### 28.5 Lot size by tier (21.5 row b)
+
+| Tier | Multiplier |
+|---|---|
+| Low (35–45) | **0.7×** |
+| Normal (46–55) | **1.0×** |
+| Confident (56–70) | **1.2×** |
+| High (71+) | **1.5×** |
+
+This replaces the 60/70/80/90 steps inside `EmttTradeConfidenceSizeMultiplier`. Risk (1.0 %), news and min/max/step handling are unchanged. The order journal reads `auto: risk 1.0%, conf NN% <label> xM.M, news …`.
+
+### 28.6 Row 10 STATUS wording
+
+- Below 35 % with a number: `Watching — confidence 28% (Very low), no trade.`. This covers both the never-reached case and the just-dropped-below-the-keep-level case. The journal's WAIT reason reads `below the 35% display level (Very low)` / `below the 35% level that keeps a BUY (Very low)`.
+- A displayed tier below the threshold: `Signal active — Low confidence BUY, watching (auto-trade threshold 56%).`. This is the manager's gate line, so it takes precedence over the signal line exactly as every Phase 8 gate line does. It clears when the plan ends.
+- Every other STATUS line is unchanged.
+
+### 28.7 Parameter rows Phase 11 adds to the table of 9.2.3
+
+| Row | Value | Class | Layer 1 / 2 / 3 / 4 |
+|---|---|---|---|
+| aa. Display floor (enter = keep) | **35 %** | Strictness | fixed |
+| ab. Tier edges | **45 / 55 / 70** | Display | fixed |
+| ac. Auto-trade above | **56** (input, 35–100) | Strictness | user input, no layer adjusts |
+| ad. Tier lot multipliers | **0.7 / 1.0 / 1.2 / 1.5** | Management | fixed |
+
+### 28.8 Tests, gates and guards
+
+- `tests/phase11_reference.py` mirrors the header, the 35 % gate, Rows 2–3, the threshold gate, the tier lots and the Row 10 precedence. `tests/test_phase11_reference.py` covers:
+  - every whole number 0–100 against its tier;
+  - Row 3 in every state;
+  - colour, size and weight per tier;
+  - Rows 4–8 empty below 35 % and filled from 35 %;
+  - the threshold clamp, the gate order and the status wording;
+  - the lot multipliers;
+  - header ↔ reference constants and the palette;
+  - the edit reversals to the frozen hashes;
+  - smoke negative controls.
+- The smoke contract (`check_phase11`) checks every constant, label and wording marker, the input placement and count (7), the include order, the version stamp, ASCII and purity of the header, the reversals, and that no tier symbol leaks into the Phase 7/9 headers. Every Phase 2–10 check is retained. The Phase 10 checks read the Signal and Dashboard pins through the Phase 11 reversal and exclude only `InpAutoTradeAbove` from their six-input count.
+- `python tools/mql5_parser_check.py` must exit 0 (Hard Rule 3).
+
+### 28.9 Not in this phase
+
+No indicator, view weight, plan-builder, trailing, breakeven, partial, time-exit, news, learning-model, `.learn` / `.summary` / `.params` format or panel-row change.
+
+## 29. Phase 11 — Done When
+
+- The panel shows ■ WAIT grey with `Confidence: NN% — Very low` and `--` Rows 4–8 below 35 %, and the coloured, graded BUY/SELL with 17.4 levels from 35 %. `Confidence: --%` appears only while no number exists.
+- The High tier is bold, Confident is full colour, and Normal and Low use the two intermediate shades.
+- With the default 56, a 41 % BUY shows on the panel with `Signal active — Low confidence BUY, watching (auto-trade threshold 56%).` and sends no order. A 60 % BUY sends its order through the unchanged Phase 8 gates at 1.2× lots.
+- Setting the input to `50` trades 50 %+ plans. Values outside 35–100 are clamped with one journal line.
+- All portable gates pass (`unittest`, smoke, parser exit 0). Native MetaEditor compilation and the author's live-terminal acceptance are recorded separately.
+
+### Phase 11 delivery evidence — v1.90 (2026-10-12)
+
+**Build status: CODE DELIVERED — portable gates passed; native MetaEditor compilation and the author's live-terminal acceptance are still pending.**
+
+**Recorded implementation readings.**
+
+- §27 lists "WHY" among the unchanged rows. That row was retired by the 2026-10-11 panel revamp, so nothing is done for it.
+- §27 says the 46–55 tier is "at normal signal colour size". This is read as signal size 14 with the second intermediate shade, so that §27's "two intermediate signal shades" gives one shade to each of Low and Normal.
+- The Phase 8 `EMTT_TRADE_SIZE_CONF_*` constants remain defined but unused, so the Trade edits stay minimal and reversible.
+- The below-threshold gate line is journalled through the existing `Trade gate` line whenever its text changes. Its text carries the number, so it can change from candle to candle while a plan stays below the threshold.
+
+**Scope proof.** Thirteen headers are byte-identical to Phase 10. Reversing the listed Phase 11 edits restores `Emtt_Signal.mqh` to `434b27bd…`, `Emtt_Dashboard.mqh` to `22392551…`, and `Emtt_Trade.mqh` (then the Phase 10 edit) to `00eee02d…`. EA handle-call counts remain `iATR = 5`, `iAMA = 6`, `iBands = 1`, and GlobalVariable API calls remain **11**. No file, chart object or `Copy*` call is added.
+
+**Portable gate results (executed on this delivery tree).**
+
+| Gate | Result |
+|---|---|
+| `python -m unittest discover -s tests -v` | **592 tests, OK**: the 564 Phase 2–10 tests plus **28 Phase 11 tests** (`tests/phase11_reference.py`, `tests/test_phase11_reference.py`) |
+| `python tools/mql5_compile_smoke.py` | **exit 0**, all **19** repository MQL sources; every Phase 2–10 check plus `check_phase11` passes |
+| `python tools/mql5_parser_check.py` | **exit 0**, all **19** sources, **0 syntax errors**; negative control rejected first (**1 error node**), positive control accepted |
+| `git diff --check` | **exit 0** |
+| Native MetaEditor compilation | **Not executed**: `METAEDITOR_PATH` is unset, and MetaEditor/Wine is not available in this workspace |
+| Author's live-terminal acceptance of §29 | **Pending**; the portable tests do not assert it |
+
+**Parser identities.** Grammar `mskelton/tree-sitter-mql5` pinned at `3e4c4fdc5d42b1ec650bf5e6b5464017d05bcccf`, with `tree-sitter 0.26.0`. Every row returned `has_error=False` and `errors=0`.
+
+| Source | SHA-256 | Parser nodes |
+|---|---|---:|
+| `Experts/Emtt.mq5` | `6cdd1463ad2ac564ff44bb317d8821d06c07d8b2c8e04642cf6f71268e2e9389` | 22377 |
+| `Include/Emtt/Emtt_Dashboard.mqh` | `3d8972c0d50c038bd530010583fb3f9864c600164b08190cf00ee975f21b4c70` | 3604 |
+| `Include/Emtt/Emtt_DynamicParams.mqh` | `24bd3519a4dccd6414474e6ff5854f9042a4237e96dd058ac4cccbde368ffdb8` | 5155 |
+| `Include/Emtt/Emtt_LearnFile.mqh` | `08ec0b308a3b1ba321e652ea657739eb884c7b41b42d72d6132fdd6e36ea2f5f` | 9125 |
+| `Include/Emtt/Emtt_Learning.mqh` | `936289a3709cbb61ca961567f53c36b632efded9e0672fd9d9e3e4882373b773` | 4270 |
+| `Include/Emtt/Emtt_MTF.mqh` | `e12d61226ce59eb29a0a2ed8855e7eb7feeb59a3407f21cfcf9a6528a7665a88` | 8729 |
+| `Include/Emtt/Emtt_ParamFile.mqh` | `051586fe54e02fdfe0114c9c29a7a9c073840377480cce2b561f910f6a1f153a` | 3576 |
+| `Include/Emtt/Emtt_ParamOpt.mqh` | `854845beb8a5d26a4c153c740d6b6eb859bcc564c04f7247b8d6f03b31233f22` | 3922 |
+| `Include/Emtt/Emtt_Regime.mqh` | `d62dcf089a7baf51e7d40e68b8c960ecc1327735e7be630652f39edc8a97c01d` | 4021 |
+| `Include/Emtt/Emtt_SMC.mqh` | `1691c923927429979c369be2c62e14b89afc834764f36f7fea33da6bc7146324` | 17201 |
+| `Include/Emtt/Emtt_Signal.mqh` | `fb17be484d8d75f64b9ea4263b9acd4d08c1f23dcdb626c5a9d4f00985b43e07` | 4745 |
+| `Include/Emtt/Emtt_Summary.mqh` | `ade2b7e66f647c7595ef03d9bbf6640fdd19b2317f357678a474d6a1537e98f1` | 3473 |
+| `Include/Emtt/Emtt_Supertrend.mqh` | `6b2d6a97abb7f4e683499da73d9012986da40f54dd013102daf83a6e5a115888` | 6654 |
+| `Include/Emtt/Emtt_TickDivergence.mqh` | `1d18283912b0b24487fdd5262c3ad7180ff2dae4f6c70e4f2779a4f0156d1b73` | 4184 |
+| `Include/Emtt/Emtt_Tier.mqh` | `8dadc769067a67e0984a0dcf6012d65e7b690d6ec0d50b90cca3a3db6c395299` | 734 |
+| `Include/Emtt/Emtt_Trade.mqh` | `14c015a9bc5c310c1f256a014ec4114edf3299eaed2243a1ea503b43f2cd24c2` | 7452 |
+| `Include/Emtt/Emtt_TradeManager.mqh` | `db2e5d633f288e23439f1c7d5269f2f8dab7f9a7e70e9aaf6742d6aa97830577` | 17200 |
+| `Include/Emtt/Emtt_TradePlan.mqh` | `e52a6005ff2ef2a7e75cef3c847c7ee80504bbf73fd6aa7028b03103fe2ba415` | 2573 |
+| `Include/Emtt/Emtt_VolumeFlow.mqh` | `5f311e6fa62bc67f4235e9316cf9a4f295354487f3f77d3b54d16d571f0e2eb3` | 8648 |

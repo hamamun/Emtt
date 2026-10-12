@@ -9,6 +9,8 @@
 //| ASCII source only: display dashes are escaped at runtime.         |
 //| Phase 10 (25.1): the per-tick divergence feed lives here and the  |
 //| closed-candle trailing step reads its multiplier (25.8).          |
+//| Phase 11 (28.4): a displayed plan is traded only when its         |
+//| confidence reaches the "Auto-trade above (%)" input.              |
 //+------------------------------------------------------------------+
 #ifndef EMTT_TRADEMANAGER_MQH
 #define EMTT_TRADEMANAGER_MQH
@@ -28,6 +30,7 @@ struct SEmttTradeRuntime
    ENUM_TIMEFRAMES timeframe;
    long            magic;
    bool            autoTrading;
+   int             autoTradeAbove;   // Phase 11: clamped 35..100
    int             lotMode;
    bool            marginCheck;
    bool            placeStopLoss;
@@ -914,7 +917,10 @@ bool EmttTradeManagerSendOrder(SEmttTradeState &state,
          DoubleToString(order.stopLoss,runtime.digits) : "not sent");
       const string sizeText=(runtime.lotMode==EMTT_LOT_MINIMUM ?
          "minimum" : "auto: risk 1.0%, conf "+
-         IntegerToString(runtime.confidence)+"%, news "+
+         IntegerToString(runtime.confidence)+"% "+
+         EmttTierLabel(EmttTierOf(runtime.confidence))+" x"+
+         DoubleToString(EmttTierSizeMultiplier(runtime.confidence),1)+
+         ", news "+
          DoubleToString(state.newsSizeMultiplier,2));
       PrintFormat("Emtt | Order %s | market | lots %s (%s) | entry %s (%s) | stop %s | TP1 %s | TP2 %s | RR 1:%s | spread %d pts | bar %s",
                   EmttPlanSideName(order.side),DoubleToString(lots,2),sizeText,
@@ -1408,9 +1414,13 @@ void EmttTradeManagerTryOrder(SEmttTradeState &state,
    gate.spreadAllowed=spreadAllowed;
    gate.marginCheck=runtime.marginCheck;
    gate.marginFits=marginFits;
+   gate.confidence=runtime.confidence;
+   gate.autoTradeAbove=runtime.autoTradeAbove;
    const EEmttTradeGateFailure failure=EmttTradeGateFirstFailure(gate);
    const string reason=EmttTradeGateStatus(failure,
-                                           (int)MathRound(currentSpread));
+                                           (int)MathRound(currentSpread),
+                                           runtime.confidence,plan.side,
+                                           runtime.autoTradeAbove);
    if(failure!=EMTT_TRADE_GATE_OK)
      {
       if(reason!=state.gateStatus)
@@ -1538,6 +1548,11 @@ void EmttTradeManagerStep(SEmttTradeState &state,
       EmttTradeManagerRefreshNews(runtime,state,runtime.barTime);
       EmttTradeManagerTryOrder(state,runtime,plan,smc,vf);
      }
+   // Phase 11 (28.6): a gate line belongs to the plan it judged (the rule
+   // TryOrder already applies); once the plan has ended, Row 10 returns
+   // to the signal line, e.g. the below-35% "Watching" line.
+   if(!plan.active && !state.positionOpen && !state.pendingOrder)
+      state.gateStatus="";
    if(!state.positionOpen && !state.pendingOrder)
       state.liveStatus="";
   }

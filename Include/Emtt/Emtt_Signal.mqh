@@ -22,6 +22,7 @@
 #include "Emtt_VolumeFlow.mqh"
 #include "Emtt_MTF.mqh"
 #include "Emtt_TradePlan.mqh"
+#include "Emtt_Tier.mqh"
 
 //--- 17.3 / 17.5 the confidence rows ---------------------------------
 #define EMTT_SIG_WEIGHT_TREND     0.30
@@ -211,11 +212,12 @@ string EmttSignalWaitBare(const SEmttSignalState &state)
    switch(state.waitReason)
      {
       case EMTT_SIG_WAIT_BELOW_BAR:
-         return "below the "+IntegerToString(state.moodBar)+"% bar";
+         return "below the "+IntegerToString(EMTT_TIER_DISPLAY_MIN)+
+                "% display level (Very low)";
       case EMTT_SIG_WAIT_BELOW_KEEP:
-         return "below the "+
-                IntegerToString(state.moodBar-EMTT_SIG_STAY_MARGIN)+
-                "% level that keeps a "+EmttPlanSideName(state.waitSide);
+         return "below the "+IntegerToString(EMTT_TIER_DISPLAY_MIN)+
+                "% level that keeps a "+EmttPlanSideName(state.waitSide)+
+                " (Very low)";
       case EMTT_SIG_WAIT_NO_TARGET:
          return "no target gives 1:"+
                 DoubleToString(EmttPlanMinRiskReward(state.mood),1);
@@ -240,12 +242,9 @@ string EmttSignalWaitText(const SEmttSignalState &state)
    switch(state.waitReason)
      {
       case EMTT_SIG_WAIT_BELOW_BAR:
-         return "Watching \x2014 confidence "+number+", below the "+
-                IntegerToString(state.moodBar)+"% bar.";
       case EMTT_SIG_WAIT_BELOW_KEEP:
-         return "Watching \x2014 confidence "+number+", below the "+
-                IntegerToString(state.moodBar-EMTT_SIG_STAY_MARGIN)+
-                "% level that keeps a "+EmttPlanSideName(state.waitSide)+".";
+         // Phase 11 (28.6): below 35% the real number and tier show.
+         return EmttTierWatchingLine(state.confidence);
       case EMTT_SIG_WAIT_NO_TARGET:
          return "Watching \x2014 confidence "+number+
                 ", but no target gives 1:"+
@@ -497,8 +496,10 @@ void EmttSignalAdvance(SEmttSignalState &state,
    state.combined=EmttSignalCombined(st,smc,vf,mtf);
    state.confidence=EmttSignalConfidenceNumber(state.combined);
    const int number=state.confidence;
-   const int barLevel=state.moodBar;
-   const int keepLevel=barLevel-EMTT_SIG_STAY_MARGIN;
+   // Phase 11 (28.3): the display gate is the fixed 35% tier floor for
+   // entering and keeping; the mood / learned bar stays internal.
+   const int barLevel=EMTT_TIER_DISPLAY_MIN;
+   const int keepLevel=EMTT_TIER_DISPLAY_MIN;
    const bool wasShowing=(state.previousSignal!=0);
 
    //--- Plan lifecycle (17.7): the newly closed candle against the
@@ -559,7 +560,7 @@ void EmttSignalAdvance(SEmttSignalState &state,
    if(state.plan.active)
      {
       // A showing BUY or SELL stays while its own number is at least
-      // bar - 5; entering needs the bar, staying needs bar - 5.
+      // 35%; Phase 11 (28.3) enters and keeps at the same tier floor.
       const int sideNumber=(state.plan.side>0 ?
                             (state.combined>0.0 ? number : 0) :
                             (state.combined<0.0 ? number : 0));
@@ -650,7 +651,7 @@ void EmttSignalAdvance(SEmttSignalState &state,
             // a signal that appears without a journaled plan line.
             PrintFormat("Emtt | Signal %s | confidence %d%% | %s, bar %d%% | bar %s",
                         EmttPlanSideName(state.signal),number,
-                        EmttSignalMoodWord(mood),barLevel,
+                        EmttSignalMoodWord(mood),state.moodBar,
                         TimeToString(barTime,TIME_DATE|TIME_MINUTES));
            }
          else

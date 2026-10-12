@@ -11,6 +11,7 @@
 #define EMTT_TRADE_MQH
 
 #include "Emtt_TradePlan.mqh"
+#include "Emtt_Tier.mqh"
 
 //--- 21.14 fixed management rows ------------------------------------
 #define EMTT_TRADE_RISK                 1.0
@@ -59,7 +60,8 @@ enum EEmttTradeGateFailure
    EMTT_TRADE_GATE_MARKET_CLOSED,
    EMTT_TRADE_GATE_ALREADY_LIVE,
    EMTT_TRADE_GATE_SPREAD,
-   EMTT_TRADE_GATE_MARGIN
+   EMTT_TRADE_GATE_MARGIN,
+   EMTT_TRADE_GATE_BELOW_THRESHOLD   // Phase 11 (28.4)
   };
 
 enum EEmttTradeTrailMethod
@@ -89,6 +91,8 @@ struct SEmttTradeGateInput
    bool   spreadAllowed;
    bool   marginCheck;
    bool   marginFits;
+   int    confidence;      // Phase 11: displayed confidence
+   int    autoTradeAbove;  // Phase 11: "Auto-trade above (%)"
   };
 
 struct SEmttTradeOrderPlan
@@ -160,6 +164,9 @@ EEmttTradeGateFailure EmttTradeGateFirstFailure(
   {
    if(!gateInput.autoTrading)
       return EMTT_TRADE_GATE_AUTO_OFF;
+   if(!EmttTierAutoTradeAllowed(gateInput.confidence,
+                                gateInput.autoTradeAbove))
+      return EMTT_TRADE_GATE_BELOW_THRESHOLD;
    if(!gateInput.terminalAllowed || !gateInput.accountAllowed)
       return EMTT_TRADE_GATE_TERMINAL_OFF;
    if(!gateInput.marketOpen)
@@ -174,7 +181,9 @@ EEmttTradeGateFailure EmttTradeGateFirstFailure(
   }
 
 string EmttTradeGateStatus(const EEmttTradeGateFailure failure,
-                           const int spreadPoints)
+                           const int spreadPoints,
+                           const int confidence=0,const int side=0,
+                           const int autoTradeAbove=0)
   {
    switch(failure)
      {
@@ -191,6 +200,8 @@ string EmttTradeGateStatus(const EEmttTradeGateFailure failure,
                 IntegerToString(spreadPoints)+" pts)";
       case EMTT_TRADE_GATE_MARGIN:
          return "No trade "+EmttTradeDash()+" not enough margin";
+      case EMTT_TRADE_GATE_BELOW_THRESHOLD:
+         return EmttTierBelowThresholdLine(confidence,side,autoTradeAbove);
       default:
          return "";
      }
@@ -211,12 +222,9 @@ bool EmttTradeSpreadAllowed(const double currentSpread,
 //--- 21.5 sizing -----------------------------------------------------
 double EmttTradeConfidenceSizeMultiplier(const int confidence)
   {
-   if(confidence>=90) return EMTT_TRADE_SIZE_CONF_90;
-   if(confidence>=80) return EMTT_TRADE_SIZE_CONF_80;
-   if(confidence>=70) return EMTT_TRADE_SIZE_CONF_70;
-   // The stay band can hold a plan at 55-59. Use the lowest approved
-   // confidence multiplier there; a new plan itself still met its bar.
-   return EMTT_TRADE_SIZE_CONF_60;
+   // Phase 11 (28.5): the multiplier follows the displayed tier -
+   // Low 0.7 / Normal 1.0 / Confident 1.2 / High 1.5.
+   return EmttTierSizeMultiplier(confidence);
   }
 
 double EmttTradeNewsSizeMultiplier(const int impact)

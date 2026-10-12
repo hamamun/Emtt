@@ -140,6 +140,24 @@ A new peak on the trade side that is at least 0.10 × the entry ATR beyond the p
 
 The only edit to `Emtt_Trade.mqh` is the `divergenceMult=1.0` argument, which multiplies the final trailing distance after the confidence, regime and news factors. The stop still only ever moves in the trade's favour. STATUS shows `Trailing — momentum fading/exhausted, tightening trail.` only after a divergence-driven trailing move, and the trailing journal line shows the extra factor. There is no new input, row, file, handle or GlobalVariable. Native MetaEditor compilation and MT5 demo acceptance are still pending in `Emtt.md` §26.
 
+## Phase 11 — Graded confidence tiers and continuous signal display (code delivered)
+
+Emtt now always shows its lean once the four views give a number. The new pure header `Emtt_Tier.mqh` grades the displayed confidence into five tiers:
+
+| Confidence | SIGNAL row | Row 3 |
+|---|---|---|
+| below 35% | ■ WAIT, grey; Rows 4–8 `--` | `Confidence: 28% — Very low` |
+| 35–45% | ▲ BUY / ▼ SELL, soft shade | `Confidence: NN% — Low confidence` |
+| 46–55% | ▲ BUY / ▼ SELL, intermediate shade | `Confidence: NN% — Normal` |
+| 56–70% | ▲ BUY / ▼ SELL, full colour | `Confidence: NN% — Confident` |
+| 71%+ | ▲ BUY / ▼ SELL, full colour, bold | `Confidence: NN% — High confidence` |
+
+`Confidence: --%` remains only while there is no number: history loading, market closed, incompatible chart. From 35% up, Rows 4–8 carry the unchanged 17.4 plan levels. The signal engine enters and keeps a plan at the fixed 35% floor. The mood bar and the Phase 9 learned bar stay internal: they still feed the journal, the `.params` near-miss logic and the ticket, but they no longer gate the display.
+
+The new input **Auto-trade above (%)**, default 56, sits directly below Auto Trading ON/OFF. It takes whole numbers from 35 to 100 and clamps anything outside that range. An order is sent only when the displayed confidence reaches it and every Phase 8 safety gate passes. Market or pending orders still follow 21.6. A displayed tier below the threshold shows `Signal active — Low confidence BUY, watching (auto-trade threshold 56%).`, and below 35% STATUS reads `Watching — confidence 28% (Very low), no trade.` Lot size follows the tier: 0.7× / 1.0× / 1.2× / 1.5×.
+
+`Emtt_Signal.mqh`, `Emtt_Trade.mqh` and `Emtt_Dashboard.mqh` change only through small listed edits. The smoke contract reverses those edits to the frozen hashes, so any other change fails. Phase 9's files and decision rule are untouched. Native MetaEditor compilation and MT5 demo acceptance are still pending in `Emtt.md` §29.
+
 Run the portable checks with:
 
 ```sh
