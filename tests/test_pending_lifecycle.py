@@ -53,6 +53,130 @@ int main() {
 }
 ''')
 
+    def test_execution_prerequisites_report_first_blocker_and_log_changes_once(self):
+        readiness = MANAGER.split('string EmttTradeManagerEntryReadiness(', 1)[1].split(
+            'void EmttTradeManagerTryOrder(', 1)[0].split('{', 1)[1]
+        gate = MANAGER.split('void EmttTradeManagerSetGateStatus(', 1)[1].split(
+            'bool EmttTradeManagerSendOrder(', 1)[0].split('{', 1)[1]
+        run_cpp(r'''
+#include <cassert>
+#include <string>
+using string=std::string; using datetime=long;
+struct SEmttTradeRuntime {
+    bool chartCompatible=true, learningLoaded=true, analysisReady=true;
+    bool connected=true, quoteFresh=true;
+    int confidence=55; datetime barTime=100;
+};
+struct SEmttTradeState { string gateStatus; };
+int calls=0;
+string EmttTradeManagerTimeText(datetime) { return "time"; }
+template<class... T> void PrintFormat(const char*,T...) { ++calls; }
+void EmttTradeManagerSetGateStatus(SEmttTradeState &state,
+                                   const string reason,const datetime barTime) {'''+gate+r'''
+string EmttTradeManagerEntryReadiness(const SEmttTradeRuntime &runtime) {'''+readiness+r'''
+int main() {
+    SEmttTradeRuntime r;
+    assert(EmttTradeManagerEntryReadiness(r)=="");
+    r.quoteFresh=false;
+    assert(EmttTradeManagerEntryReadiness(r)=="No trade - fresh broker quote unavailable");
+    r.connected=false;
+    assert(EmttTradeManagerEntryReadiness(r)=="No trade - terminal disconnected");
+    r.connected=true; r.learningLoaded=false;
+    assert(EmttTradeManagerEntryReadiness(r)=="No trade - learning file not ready");
+    r.chartCompatible=false;
+    assert(EmttTradeManagerEntryReadiness(r)=="No trade - incompatible chart timeframe");
+    r.chartCompatible=true; r.learningLoaded=true; r.analysisReady=false;
+    assert(EmttTradeManagerEntryReadiness(r)=="No trade - closed-bar analysis not ready");
+    SEmttTradeState s;
+    EmttTradeManagerSetGateStatus(s,"No trade - closed-bar analysis not ready",100);
+    EmttTradeManagerSetGateStatus(s,"No trade - closed-bar analysis not ready",100);
+    assert(calls==1);
+    EmttTradeManagerSetGateStatus(s,"No trade - terminal disconnected",100);
+    assert(calls==2);
+}
+''')
+        attempt = MANAGER.split('void EmttTradeManagerTryOrder(', 1)[1].split(
+            'void EmttTradeManagerBindCurrentOpenTicket(', 1)[0]
+        self.assertLess(attempt.index('EmttTradeManagerEntryReadiness(runtime)'),
+                        attempt.index('EmttPendingRetired('))
+        self.assertLess(attempt.index('EmttPendingRetired('),
+                        attempt.index('EmttTradeBuildOrder('))
+        self.assertIn('EmttTradeManagerSetGateStatus(state,\n         "No trade - this order-block execution attempt is retired"', attempt)
+
+    def test_panel_distinguishes_retired_entry_from_live_order(self):
+        ea = (ROOT / 'Experts/Emtt.mq5').read_text()
+        panel = ea.split('void EmttTradeManagerPanelStatus(SEmttPanelData &data)', 1)[1].split(
+            'void EmttJournalSignalState(', 1)[0]
+        self.assertIn('d.status="Signal plan - entry not reached yet.";', ea)
+        run_cpp(r'''
+#include <cassert>
+#include <string>
+using string=std::string; using datetime=long;
+const int EMTT_PLAN_ENTRY_BLOCK=1, SYMBOL_POINT=2, EMTT_CLR_SELL=3, PERIOD_CURRENT=0;
+struct SEmttPanelData { string status; int statusClr=0; };
+struct Plan { bool active=true; int entryKind=EMTT_PLAN_ENTRY_BLOCK; int side=1; double entry=100; };
+struct Signal { Plan plan; } g_signal;
+struct Trade {
+    int tradeTimeframe=0; bool pendingOrder=false, positionOpen=false;
+    string freshStatus, holdStatus, newsStatus, gateStatus, liveStatus;
+    datetime freshStatusBarTime=0;
+} g_trade;
+string g_symbol="ETHUSDm";
+int g_timeframe=30;
+datetime g_lastClosedBarTime=100;
+bool g_snapshotReady=true, g_marketOpen=true, retired=false;
+bool TfAllowed() { return true; }
+datetime iTime(const string&,int,int) { return 100; }
+double SymbolInfoDouble(const string&,int) { return 0.01; }
+int StringFind(const string& s,const string& needle) {
+    auto pos=s.find(needle); return pos==string::npos ? -1 : (int)pos;
+}
+bool EmttPendingRetired(const Trade&,int tf,int side,double entry,double) {
+    return retired && tf==30 && side==1 && entry==100;
+}
+void EmttTradeManagerPanelStatus(SEmttPanelData &data)'''+panel+r'''
+int main() {
+    SEmttPanelData d;
+    d.status="Signal plan - entry not reached yet.";
+    EmttTradeManagerPanelStatus(d);
+    assert(d.status=="Signal plan - entry not reached yet.");
+    retired=true;
+    EmttTradeManagerPanelStatus(d);
+    assert(d.status=="No trade - entry attempt ended; new setup needed.");
+    assert(d.statusClr==EMTT_CLR_SELL);
+    g_trade.gateStatus="No trade - this order-block execution attempt is retired";
+    EmttTradeManagerPanelStatus(d);
+    assert(d.status=="No trade - entry attempt ended; new setup needed.");
+    g_trade.gateStatus="";
+    g_trade.pendingOrder=true; g_trade.liveStatus="Pending order at 100";
+    EmttTradeManagerPanelStatus(d);
+    assert(d.status=="Pending order at 100");
+    g_trade.pendingOrder=false; g_trade.positionOpen=true;
+    g_trade.liveStatus="Position open";
+    EmttTradeManagerPanelStatus(d);
+    assert(d.status=="Position open");
+    g_trade.positionOpen=false; g_trade.gateStatus="Order rejected - broker error";
+    EmttTradeManagerPanelStatus(d);
+    assert(d.status=="Order rejected - broker error");
+    g_trade.gateStatus=""; g_signal.plan.entry=101; d.status="Signal plan";
+    EmttTradeManagerPanelStatus(d);
+    assert(d.status=="Signal plan");
+    g_trade.newsStatus="News note"; g_trade.gateStatus="No trade - stale quote";
+    EmttTradeManagerPanelStatus(d);
+    assert(d.status=="No trade - stale quote");
+    g_trade.gateStatus=""; EmttTradeManagerPanelStatus(d);
+    assert(d.status=="News note");
+    g_trade.newsStatus="";
+    g_signal.plan.entry=100; g_trade.freshStatus="Recent trade event";
+    g_trade.freshStatusBarTime=100;
+    EmttTradeManagerPanelStatus(d);
+    assert(d.status=="Recent trade event");
+    g_trade.freshStatus=""; g_marketOpen=false; d.status="MARKET CLOSED";
+    EmttTradeManagerPanelStatus(d);
+    assert(d.status=="MARKET CLOSED");
+}
+''')
+
     def test_pending_policy_both_directions_and_boundaries(self):
         run_cpp(self.preamble() + r'''
 SEmttPendingCheck good(int side=1) {
