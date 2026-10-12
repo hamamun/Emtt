@@ -9,13 +9,15 @@
 //+------------------------------------------------------------------+
 #property copyright   "Author: Ham | Coder: Arena"
 #property link        ""
-#property version     "1.70"
+#property version     "1.90"
 #property description "Emtt V1.0 - MT5 Trading Expert Adviser."
 #property description "Phase 5: closed-bar volume flow (VWAP, profile, CVD) and higher-timeframe agreement."
 #property description "Phase 6: signal and trade plan (no orders)."
 #property description "Phase 7: self-learning signal filter."
 #property description "Phase 8: live trading - order, management, record."
 #property description "Phase 9: parameter-optimization persistence."
+#property description "Phase 10: tick-level CVD divergence detection for the trailing stop."
+#property description "Phase 11: graded confidence tiers and continuous signal display."
 #property description "Panel revamp: WHY removed, STATUS single-line, Summary Today/All-Time, dynamic width."
 #property description "Allowed analysis timeframes: M5 / M15 / M30 only."
 
@@ -27,12 +29,14 @@
 #include "../Include/Emtt/Emtt_VolumeFlow.mqh"
 #include "../Include/Emtt/Emtt_MTF.mqh"
 #include "../Include/Emtt/Emtt_TradePlan.mqh"
+#include "../Include/Emtt/Emtt_Tier.mqh"
 #include "../Include/Emtt/Emtt_Signal.mqh"
 #include "../Include/Emtt/Emtt_Summary.mqh"
 #include "../Include/Emtt/Emtt_LearnFile.mqh"
 #include "../Include/Emtt/Emtt_Learning.mqh"
 #include "../Include/Emtt/Emtt_ParamFile.mqh"
 #include "../Include/Emtt/Emtt_ParamOpt.mqh"
+#include "../Include/Emtt/Emtt_TickDivergence.mqh"
 #include "../Include/Emtt/Emtt_Trade.mqh"
 #include "../Include/Emtt/Emtt_TradeManager.mqh"
 
@@ -41,6 +45,7 @@ input bool InpParamOptimization=true; // Parameter optimization ON/OFF
 
 input group "Auto Trading"
 input bool InpAutoTrading=false;      // Auto Trading ON/OFF
+input int  InpAutoTradeAbove=56;      // Auto-trade above (%)
 input ENUM_EMTT_LOT_MODE InpLotMode=EMTT_LOT_AUTO;  // Lot size: Auto / Minimum
 input bool InpMarginCheck=false;      // Require free-margin check
 input bool InpPlaceStopLoss=false;    // Place stop loss with the order
@@ -93,6 +98,9 @@ SEmttSignalState           g_signal;
 SEmttSummaryState          g_summary;
 SEmttLearningState         g_learning;
 SEmttParamOptState g_paramOpt;
+SEmttTickDivergenceState g_tickDiv;
+// Phase 11 (28.4): the "Auto-trade above (%)" input, clamped to 35..100.
+int                        g_autoTradeAbove=EMTT_TIER_AUTO_DEFAULT;
 SEmttTradeState            g_trade;
 SEmttBrokerOffsetState     g_brokerOffset;
 SEmttRegimeMeasurements    g_snapshotMeasurements;
@@ -1422,8 +1430,9 @@ void EmttJournalPlanStart(const datetime barTime,const int spreadPts)
    if(!g_signal.plan.active)
       return;
    const int digits=(int)SymbolInfoInteger(g_symbol,SYMBOL_DIGITS);
-   PrintFormat("Emtt | Signal %s | confidence %d%% | %s, bar %d%% | bar %s",
+   PrintFormat("Emtt | Signal %s | confidence %d%% (%s) | %s, bar %d%% | bar %s",
                EmttPlanSideName(g_signal.plan.side),g_signal.confidence,
+               EmttTierLabel(EmttTierOf(g_signal.confidence)),
                EmttSignalMoodWord(g_signal.mood),g_signal.moodBar,
                EmttLearnTimeText(barTime));
    string line="Emtt | Plan "+EmttPlanSideName(g_signal.plan.side)+
@@ -1779,6 +1788,7 @@ void EmttTradeManagerBuildRuntime(SEmttTradeRuntime &runtime)
    runtime.timeframe=g_timeframe;
    runtime.magic=InpMagicNumber;
    runtime.autoTrading=InpAutoTrading;
+   runtime.autoTradeAbove=g_autoTradeAbove;
    runtime.lotMode=(int)InpLotMode;
    runtime.marginCheck=InpMarginCheck;
    runtime.placeStopLoss=InpPlaceStopLoss;
@@ -1847,7 +1857,7 @@ void EmttTradeManagerRefresh()
    if(g_paramOpt.enabled && g_paramOpt.positionFrozen && g_trade.positionOpen)
       g_trade.entryMoodBar=g_paramOpt.frozenBar;
    EmttTradeManagerStep(g_trade,runtime,g_signal.plan,g_supertrend,g_smc,
-                        g_volumeFlow,g_learning.file);
+                        g_volumeFlow,g_learning.file,g_tickDiv);
    EmttLearningRecordTradeEvents();
   }
 
@@ -1899,9 +1909,11 @@ void EmttJournalSignalState(const datetime barTime)
       g_signal.journaledSignal!=g_signal.signal)
      {
       if(g_signal.signal!=0)
-         PrintFormat("Emtt | Signal %s | confidence %d%% | %s, bar %d%% | bar %s",
+         PrintFormat("Emtt | Signal %s | confidence %d%% (%s) | %s, bar %d%% | bar %s",
                      EmttPlanSideName(g_signal.signal),
-                     g_signal.confidence,EmttSignalMoodWord(g_signal.mood),
+                     g_signal.confidence,
+                     EmttTierLabel(EmttTierOf(g_signal.confidence)),
+                     EmttSignalMoodWord(g_signal.mood),
                      g_signal.moodBar,EmttLearnTimeText(barTime));
       else
          PrintFormat("Emtt | Signal WAIT | %s | bar %s",
@@ -2192,6 +2204,26 @@ void EmttConsumeSignalEvents(const datetime barTime,const double barHigh,
 //+------------------------------------------------------------------+
 //| Build the Phase-2 panel snapshot without changing the renderer    |
 //+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
+//| Phase 11 (28.2): SIGNAL row colour, size and weight by tier.      |
+//| Low = soft shade, Normal = intermediate shade, Confident = full   |
+//| colour, High = full colour + bold; every BUY/SELL stays at the    |
+//| rule-16 signal size.                                              |
+//+------------------------------------------------------------------+
+void EmttTierSignalStyle(const int side,const int confidence,
+                         SEmttPanelData &d)
+  {
+   const int tier=EmttTierOf(confidence);
+   d.signalSize=EMTT_FSIZE_SIG;
+   d.signalBold=(tier==EMTT_TIER_HIGH);
+   if(tier==EMTT_TIER_LOW)
+      d.signalClr=(side>0 ? EMTT_CLR_BUY_LOW : EMTT_CLR_SELL_LOW);
+   else if(tier==EMTT_TIER_NORMAL)
+      d.signalClr=(side>0 ? EMTT_CLR_BUY_NORMAL : EMTT_CLR_SELL_NORMAL);
+   else
+      d.signalClr=(side>0 ? EMTT_CLR_BUY : EMTT_CLR_SELL);
+  }
+
 void FillPanel(SEmttPanelData &d)
   {
    const bool compatible=TfAllowed();
@@ -2223,6 +2255,7 @@ void FillPanel(SEmttPanelData &d)
    d.header=EmttHeaderText();
    d.signalClr=EMTT_CLR_TEXT;
    d.signalSize=EMTT_FSIZE;
+   d.signalBold=false;
    d.statusClr=EMTT_CLR_TEXT;
    d.floatingClr=EMTT_CLR_TEXT;
    d.showLive=false;
@@ -2232,7 +2265,9 @@ void FillPanel(SEmttPanelData &d)
    // in every state: no trade size exists before the safety step (17.6).
    d.regime="Regime: --";
    d.signal="SIGNAL: --";
-   d.confidence="Confidence: --";
+   // Phase 11 (28.2): "--%" only while no number exists (loading,
+   // market closed, incompatible chart, views not ready).
+   d.confidence=EmttTierConfidenceRow(-1);
    d.entry="Entry: -- / --  (-- pts away)";
    d.stopLoss="Stop Loss: -- / --  (-- pts)";
    d.takeProfit="Take Profit: -- / --  (-- pts)";
@@ -2280,23 +2315,24 @@ void FillPanel(SEmttPanelData &d)
 
          if(sigReady)
            {
-            // Row 2: the signal with its glyph, colour and size (17.6).
+            // Row 2: the signal with its glyph, colour and size (17.6),
+            // graded by the Phase 11 tier of the displayed number (28.2).
             if(g_signal.signal>0)
               {
                d.signal="SIGNAL: "+EmttGlyph(EMTT_G_BUY)+" BUY";
-               d.signalClr=EMTT_CLR_BUY;
-               d.signalSize=EMTT_FSIZE_SIG;
+               EmttTierSignalStyle(1,g_signal.confidence,d);
               }
             else if(g_signal.signal<0)
               {
                d.signal="SIGNAL: "+EmttGlyph(EMTT_G_SELL)+" SELL";
-               d.signalClr=EMTT_CLR_SELL;
-               d.signalSize=EMTT_FSIZE_SIG;
+               EmttTierSignalStyle(-1,g_signal.confidence,d);
               }
             else
                d.signal="SIGNAL: "+EmttGlyph(EMTT_SIG_GLYPH_WAIT)+" WAIT";
-            d.confidence="Confidence: "+
-                         IntegerToString(g_signal.confidence)+"%";
+            // Row 3: the real number and its tier whenever one exists,
+            // including the below-35% WAIT (28.2).
+            d.confidence=EmttTierConfidenceRow(g_signal.viewsReady ?
+                                               g_signal.confidence : -1);
             if(planShowing)
               {
                // Rows 4-7: the fixed plan levels. Row 4's distance is
@@ -2385,8 +2421,9 @@ void FillPanel(SEmttPanelData &d)
             // was judged on the adjusted number.
             if(g_signal.signal==0 && !g_signal.plan.active)
               {
+               // Phase 11 (28.3): the display gate is the 35% tier floor.
                const string learningStatus=EmttLearnHoldReason(
-                  g_learning,g_learning.reading,g_signal.moodBar);
+                  g_learning,g_learning.reading,EMTT_TIER_DISPLAY_MIN);
                if(learningStatus!="")
                   d.status=learningStatus;
               }
@@ -2495,6 +2532,15 @@ int OnInit()
    // symbol and timeframe is bound, loaded and rewritten by the replay.
    EmttLearnStateReset(g_learning);
    EmttTradeManagerInit(g_trade,g_symbol,g_timeframe,InpMagicNumber);
+   // Phase 10 (25.2 rule 11): the tick buffer starts empty; an adopted
+   // position gets a fresh session and warmup on its first tick.
+   EmttTickDivReset(g_tickDiv);
+   // Phase 11 (28.4): whole numbers 35..100; anything else is clamped once.
+   g_autoTradeAbove=EmttTierAutoTradeAbove(InpAutoTradeAbove);
+   if(g_autoTradeAbove!=InpAutoTradeAbove)
+      PrintFormat("Emtt | Auto-trade above %d%% is outside %d-%d | using %d%%",
+                  InpAutoTradeAbove,EMTT_TIER_AUTO_MIN,EMTT_TIER_AUTO_MAX,
+                  g_autoTradeAbove);
    EmttParamOptReset(g_paramOpt,InpParamOptimization);
    EmttParamOptimizationAttachAndLoad(iTime(g_symbol,g_timeframe,1));
    if(g_paramOpt.enabled) EmttSyncFrozenPositionContext();
@@ -2534,9 +2580,12 @@ void OnDeinit(const int reason)
   }
 
 // Ticks update only the live price row / panel; no indicators run here.
+// Phase 10 (25.1): after the panel, the latest tick feeds the O(1)
+// divergence state of an open Emtt position (nothing when flat).
 void OnTick()
   {
    UpdatePanel();
+   EmttTradeManagerFeedTick(g_trade,g_tickDiv);
   }
 
 void OnTimer()

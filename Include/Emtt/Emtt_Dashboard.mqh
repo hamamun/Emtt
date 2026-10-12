@@ -19,9 +19,16 @@
 #define EMTT_CLR_TEXT   C'200,200,200'   // all soft text / WAIT    #C8C8C8
 #define EMTT_CLR_BUY    C'111,207,151'   // BUY / profit            #6FCF97
 #define EMTT_CLR_SELL   C'235,111,111'   // SELL / loss / warning   #EB6F6F
+// Phase 11 (28.2): the two intermediate signal shades, blends of the
+// signal colour toward the soft text grey C'200,200,200'.
+#define EMTT_CLR_BUY_LOW     C'156,204,176'   // Low BUY (50%)     #9CCCB0
+#define EMTT_CLR_SELL_LOW    C'218,156,156'   // Low SELL (50%)    #DA9C9C
+#define EMTT_CLR_BUY_NORMAL  C'133,205,163'   // Normal BUY (25%)  #85CDA3
+#define EMTT_CLR_SELL_NORMAL C'226,133,133'   // Normal SELL (25%) #E28585
 
 //--- typography & geometry - rules 13, 16 ---------------------------
 #define EMTT_FONT       "Segoe UI"
+#define EMTT_FONT_BOLD  "Segoe UI Bold"  // Phase 11: High-confidence SIGNAL
 #define EMTT_FSIZE      12               // every row
 #define EMTT_FSIZE_SIG  14               // SIGNAL row when BUY/SELL
 #define EMTT_PREFIX     "Emtt_"
@@ -64,6 +71,7 @@ struct SEmttPanelData
    string signal;      // Row 2  (full text incl. "SIGNAL: ")
    color  signalClr;   // rule 17: only SIGNAL and Floating P/L are coloured
    int    signalSize;  // rule 16: 14 for BUY/SELL, else 12
+   bool   signalBold;  // Phase 11 (28.2): bold for the High tier only
    string confidence;  // Row 3
    string entry;       // Row 4
    string stopLoss;    // Row 5
@@ -111,6 +119,7 @@ string b_text[];
 color  b_clr[];
 int    b_size[];
 int    b_kind[];                // 0=header text, 1=row text, 2=separator
+bool   b_bold[];                // Phase 11: bold face for this row
 int    b_n=0;
 
 //+------------------------------------------------------------------+
@@ -125,7 +134,7 @@ int EmttFontH(const int size)
 //| Measure a text's pixel width (cached, measured via a hidden       |
 //| label so wrapping matches the real font metrics)                  |
 //+------------------------------------------------------------------+
-double EmttTextWidth(const string text,const int size)
+double EmttTextWidth(const string text,const int size,const bool bold=false)
   {
 // Dynamic width measures every render, so the cache is bounded: a quiet
 // reset keeps memory flat on tick-heavy symbols with ever-new prices.
@@ -135,7 +144,7 @@ double EmttTextWidth(const string text,const int size)
       ArrayFree(g_mVals);
       g_mCount=0;
      }
-   const string key=IntegerToString(size)+"|"+text;
+   const string key=(bold ? "B" : "")+IntegerToString(size)+"|"+text;
    for(int i=0;i<g_mCount;i++)
       if(g_mKeys[i]==key)
          return g_mVals[i];
@@ -149,7 +158,7 @@ double EmttTextWidth(const string text,const int size)
       ObjectSetInteger(0,name,OBJPROP_XDISTANCE,-10000);
       ObjectSetInteger(0,name,OBJPROP_YDISTANCE,-10000);
      }
-   ObjectSetString(0,name,OBJPROP_FONT,EMTT_FONT);
+   ObjectSetString(0,name,OBJPROP_FONT,(bold ? EMTT_FONT_BOLD : EMTT_FONT));
    ObjectSetInteger(0,name,OBJPROP_FONTSIZE,size);
    ObjectSetString(0,name,OBJPROP_TEXT,text);
    ChartRedraw();
@@ -190,16 +199,19 @@ void BClear()
    b_n=0;
   }
 
-void BAdd(const string t,const color c,const int sz,const int k)
+void BAdd(const string t,const color c,const int sz,const int k,
+          const bool bold=false)
   {
    ArrayResize(b_text,b_n+1);
    ArrayResize(b_clr,b_n+1);
    ArrayResize(b_size,b_n+1);
    ArrayResize(b_kind,b_n+1);
+   ArrayResize(b_bold,b_n+1);
    b_text[b_n]=t;
    b_clr[b_n]=c;
    b_size[b_n]=sz;
    b_kind[b_n]=k;
+   b_bold[b_n]=bold;
    b_n++;
   }
 
@@ -239,12 +251,12 @@ string EmttRectSlot(const int i)
   }
 
 void ApplyLabel(const string name,const int x,const int y,const string text,
-                const color clr,const int size)
+                const color clr,const int size,const bool bold=false)
   {
    ObjectSetInteger(0,name,OBJPROP_CORNER,CORNER_LEFT_UPPER);
    ObjectSetInteger(0,name,OBJPROP_XDISTANCE,x);
    ObjectSetInteger(0,name,OBJPROP_YDISTANCE,y);
-   ObjectSetString(0,name,OBJPROP_FONT,EMTT_FONT);
+   ObjectSetString(0,name,OBJPROP_FONT,(bold ? EMTT_FONT_BOLD : EMTT_FONT));
    ObjectSetInteger(0,name,OBJPROP_FONTSIZE,size);
    ObjectSetString(0,name,OBJPROP_TEXT,text);
    ObjectSetInteger(0,name,OBJPROP_COLOR,clr);
@@ -311,7 +323,7 @@ void EmttLayout()
          const int h=(b_size[i]>=EMTT_FSIZE_SIG)?EMTT_SIG_H:EMTT_ROW_H;
          n=EmttLabelSlot(li++);
          ApplyLabel(n,g_panelX+EMTT_PAD_X,y+(h-EmttFontH(b_size[i]))/2,
-                    b_text[i],b_clr[i],b_size[i]);
+                    b_text[i],b_clr[i],b_size[i],b_bold[i]);
          y+=h;
         }
      }
@@ -335,7 +347,7 @@ void EmttDashboardRender(const SEmttPanelData &d)
    BSep();
    BAdd(d.regime,EMTT_CLR_TEXT,EMTT_FSIZE,1);
    BSep();
-   BAdd(d.signal,d.signalClr,d.signalSize,1);
+   BAdd(d.signal,d.signalClr,d.signalSize,1,d.signalBold);
    BAdd(d.confidence,EMTT_CLR_TEXT,EMTT_FSIZE,1);
    BSep();
    BAdd(d.entry,EMTT_CLR_TEXT,EMTT_FSIZE,1);
@@ -364,7 +376,7 @@ void EmttDashboardRender(const SEmttPanelData &d)
      {
       if(b_kind[i]==2)
          continue;
-      maxw=MathMax(maxw,(int)EmttTextWidth(b_text[i],b_size[i]));
+      maxw=MathMax(maxw,(int)EmttTextWidth(b_text[i],b_size[i],b_bold[i]));
      }
    g_panelWidth=maxw+2*EMTT_PAD_X;
    if(g_panelWidth<2*EMTT_PAD_X+1)

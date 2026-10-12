@@ -7,12 +7,17 @@
 //| trade decisions come from Emtt_Trade.mqh; all learning-file       |
 //| writes are delegated to the EA's existing learning-file path.    |
 //| ASCII source only: display dashes are escaped at runtime.         |
+//| Phase 10 (25.1): the per-tick divergence feed lives here and the  |
+//| closed-candle trailing step reads its multiplier (25.8).          |
+//| Phase 11 (28.4): a displayed plan is traded only when its         |
+//| confidence reaches the "Auto-trade above (%)" input.              |
 //+------------------------------------------------------------------+
 #ifndef EMTT_TRADEMANAGER_MQH
 #define EMTT_TRADEMANAGER_MQH
 
 #include <Trade/Trade.mqh>
 #include "Emtt_Dashboard.mqh"
+#include "Emtt_TickDivergence.mqh"
 #include "Emtt_Trade.mqh"
 #include "Emtt_LearnFile.mqh"
 #include "Emtt_Learning.mqh"
@@ -25,6 +30,7 @@ struct SEmttTradeRuntime
    ENUM_TIMEFRAMES timeframe;
    long            magic;
    bool            autoTrading;
+   int             autoTradeAbove;   // Phase 11: clamped 35..100
    int             lotMode;
    bool            marginCheck;
    bool            placeStopLoss;
@@ -911,7 +917,10 @@ bool EmttTradeManagerSendOrder(SEmttTradeState &state,
          DoubleToString(order.stopLoss,runtime.digits) : "not sent");
       const string sizeText=(runtime.lotMode==EMTT_LOT_MINIMUM ?
          "minimum" : "auto: risk 1.0%, conf "+
-         IntegerToString(runtime.confidence)+"%, news "+
+         IntegerToString(runtime.confidence)+"% "+
+         EmttTierLabel(EmttTierOf(runtime.confidence))+" x"+
+         DoubleToString(EmttTierSizeMultiplier(runtime.confidence),1)+
+         ", news "+
          DoubleToString(state.newsSizeMultiplier,2));
       PrintFormat("Emtt | Order %s | market | lots %s (%s) | entry %s (%s) | stop %s | TP1 %s | TP2 %s | RR 1:%s | spread %d pts | bar %s",
                   EmttPlanSideName(order.side),DoubleToString(lots,2),sizeText,
@@ -929,7 +938,8 @@ void EmttTradeManagerManagePosition(SEmttTradeState &state,
                                     const SEmttSupertrendState &st,
                                     const SEmttSmcState &smc,
                                     const SEmttVolumeFlowState &vf,
-                                    const datetime barTime)
+                                    const datetime barTime,
+                                    SEmttTickDivergenceState &div)
   {
    if(!state.positionOpen || state.tradeTimeframe==PERIOD_CURRENT)
       return;
@@ -1178,11 +1188,15 @@ void EmttTradeManagerManagePosition(SEmttTradeState &state,
                            (state.side>0 ? smc.newestLowSlot>=0 :
                                            smc.newestHighSlot>=0));
       SEmttTradeTrailResult trail;
+      // 25.8: the latched tick-divergence multiplier (1.0 when detection
+      // is inactive or shows no divergence) multiplies the final distance.
+      const double divMult=EmttTickDivMultiplier(div);
+      const int divLevel=(divMult<1.0 ? div.level : (int)EMTT_DIV_LEVEL_NONE);
       if(EmttTradeTrailCalculate(state.side,state.entryPrice,current,state.tp1,
           atr,state.tradeTimeframe,state.currentConfidence,
           (runtime.mood!=EMTT_REGIME_UNKNOWN ? runtime.mood : state.entryMood),
           state.highNews,state.highestHigh,state.lowestLow,hasSwing,
-          smc.newestLowLevel,smc.newestHighLevel,trail))
+          smc.newestLowLevel,smc.newestHighLevel,trail,divMult))
         {
          double proposed=trail.stop;
          if(state.side>0 && proposed<state.entryPrice)
@@ -1200,17 +1214,26 @@ void EmttTradeManagerManagePosition(SEmttTradeState &state,
                         state.entryPrice-proposed)/runtime.point);
             if(EmttTradeManagerModify(state,proposed,
                   (state.tp1Hit ? state.tp2 : state.tp1),closedTime))
-               EmttTradeManagerSetFresh(state,
+              {
+               // 25.10: a divergence-driven update shows its own line for
+               // this update only; 25.11: the journal carries the factor.
+               const string trailStatus=(divLevel!=EMTT_DIV_LEVEL_NONE ?
+                  EmttTickDivTrailStatus(divLevel) :
                   "Trailing "+EmttTradeDash()+" stop at "+
                   DoubleToString(proposed,runtime.digits)+", +"+
-                  IntegerToString(locked)+" pts locked.",closedTime,
+                  IntegerToString(locked)+" pts locked.");
+               EmttTradeManagerSetFresh(state,trailStatus,closedTime,
                   "Trailing updated | "+
                   EmttTradeTrailMethodName(trail.method)+" | stop "+
                   DoubleToString(proposed,runtime.digits)+" ("+
                   DoubleToString(trail.rawDistance/atr,1)+" ATR x"+
                   DoubleToString(trail.confidenceMultiplier*
-                    trail.regimeMultiplier*trail.newsMultiplier,2)+") | +"+
-                  IntegerToString(locked)+" pts locked");
+                    trail.regimeMultiplier*trail.newsMultiplier,2)+
+                  (divMult!=1.0 ? " x"+DoubleToString(divMult,1) : "")+
+                  ") | +"+IntegerToString(locked)+" pts locked");
+               // 25.7: a trailing stop move resets the reading.
+               EmttTickDivOnStopMoved(div,true);
+              }
            }
         }
      }
@@ -1391,9 +1414,13 @@ void EmttTradeManagerTryOrder(SEmttTradeState &state,
    gate.spreadAllowed=spreadAllowed;
    gate.marginCheck=runtime.marginCheck;
    gate.marginFits=marginFits;
+   gate.confidence=runtime.confidence;
+   gate.autoTradeAbove=runtime.autoTradeAbove;
    const EEmttTradeGateFailure failure=EmttTradeGateFirstFailure(gate);
    const string reason=EmttTradeGateStatus(failure,
-                                           (int)MathRound(currentSpread));
+                                           (int)MathRound(currentSpread),
+                                           runtime.confidence,plan.side,
+                                           runtime.autoTradeAbove);
    if(failure!=EMTT_TRADE_GATE_OK)
      {
       if(reason!=state.gateStatus)
@@ -1473,7 +1500,8 @@ void EmttTradeManagerStep(SEmttTradeState &state,
                           const SEmttSupertrendState &st,
                           const SEmttSmcState &smc,
                           const SEmttVolumeFlowState &vf,
-                          const SEmttLearnFileState &learningFile)
+                          const SEmttLearnFileState &learningFile,
+                          SEmttTickDivergenceState &div)
   {
    if(!state.initialized)
       EmttTradeManagerInit(state,runtime.symbol,runtime.timeframe,
@@ -1511,7 +1539,8 @@ void EmttTradeManagerStep(SEmttTradeState &state,
      }
 
    if(state.positionOpen)
-      EmttTradeManagerManagePosition(state,runtime,st,smc,vf,runtime.barTime);
+      EmttTradeManagerManagePosition(state,runtime,st,smc,vf,runtime.barTime,
+                                     div);
    else if(!state.pendingOrder && !state.closeHistoryPending &&
            !state.closeRecordPending && !state.summaryOutcomePending &&
            runtime.chartCompatible && runtime.learningLoaded && plan.active)
@@ -1519,8 +1548,42 @@ void EmttTradeManagerStep(SEmttTradeState &state,
       EmttTradeManagerRefreshNews(runtime,state,runtime.barTime);
       EmttTradeManagerTryOrder(state,runtime,plan,smc,vf);
      }
+   // Phase 11 (28.6): a gate line belongs to the plan it judged (the rule
+   // TryOrder already applies); once the plan has ended, Row 10 returns
+   // to the signal line, e.g. the below-35% "Watching" line.
+   if(!plan.active && !state.positionOpen && !state.pendingOrder)
+      state.gateStatus="";
    if(!state.positionOpen && !state.pendingOrder)
       state.liveStatus="";
+  }
+
+//+------------------------------------------------------------------+
+//| Phase 10 (25.1 / 25.3): the per-tick divergence feed, called from |
+//| OnTick after the panel refresh. Only SymbolInfoTick is read; no   |
+//| history copy, no indicator and no order call happens here. A new  |
+//| or adopted position starts a fresh session with its own warmup;   |
+//| everything resets silently when no Emtt position is open.         |
+//+------------------------------------------------------------------+
+void EmttTradeManagerFeedTick(const SEmttTradeState &state,
+                              SEmttTickDivergenceState &div)
+  {
+   if(!state.initialized || !state.positionOpen ||
+      state.positionTicket==0 || (state.side!=1 && state.side!=-1))
+     {
+      if(div.armed)
+         EmttTickDivReset(div);
+      return;
+     }
+   if(!div.armed || div.ticket!=state.positionTicket || div.side!=state.side)
+      EmttTickDivArm(div,state.positionTicket,state.side,
+                     (int)SymbolInfoInteger(state.symbol,SYMBOL_DIGITS));
+   MqlTick tick;
+   if(!SymbolInfoTick(state.symbol,tick))
+      return;
+   const long timeMsc=(tick.time_msc>0 ? (long)tick.time_msc :
+                       (long)tick.time*1000);
+   EmttTickDivFeed(div,tick.bid,tick.ask,timeMsc,state.entryAtr,
+                   state.breakevenReached,true);
   }
 
 void EmttTradeManagerFillPanel(SEmttPanelData &data,
